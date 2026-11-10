@@ -115,29 +115,42 @@ def player_features(pg: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def team_context(pg: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Teammate-availability context per player-game (oracle participation = who actually played).
+ROTATION_BASE_MIN = 8.0    # baseline minutes per team game that make a player "rotation"
+ROTATION_EXP_MIN = 12.0    # ... or expected minutes when he plays
 
-    For each team-game, the baseline is the team's previous 10 games: a player's *baseline minutes*
-    is his minutes per team game over those games (0 when he did not play), counted only if he has
-    not appeared for another team since. ``vacated_min`` / ``vacated_used`` sum the baseline minutes /
-    plays used (FGA + FT trips + TOV) of baseline players who are not playing today; ``slack_min`` =
-    240 - baseline minutes of today's participants (minutes that must be redistributed).
+
+def team_context(pg: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Teammate-availability context per team-game, using only information public before tip-off.
+
+    Baseline = the team's previous 10 games: a player's baseline minutes / plays used are his
+    per-team-game averages over those games (0 when he did not play), if he has not appeared for
+    another team since. Players are *rotation* players if their baseline minutes >= 8 or their
+    expected minutes when playing >= 12, or they start today. Whether a rotation player plays is
+    treated as known pregame (injury report / inactive list); whether a fringe player plays is not
+    (it depends on blowouts and foul trouble), so fringe players enter every pregame quantity through
+    their baseline minutes, never through today's participation:
+
+    * ``avail_exp_min``  sum of today's rotation participants' expected minutes + fringe baseline minutes
+    * ``vacated_min``    baseline minutes of absent *rotation* players (``vacated_used`` for plays used)
+    * ``slack_min``      240 - (baseline minutes of rotation participants + fringe baseline minutes)
     """
     exp_min = (feats["min_sum_m20"] / feats["gp_m20"].replace(0, np.nan)).fillna(feats["season_min_avg"])
     h = 40
     used = sum(feats[f"{c}_h{h}"] for c in ("fga2", "fga3", "trips2", "trips3", "tov"))
     plays = feats[f"on_fga_h{h}"] + feats[f"on_trips_h{h}"] + feats[f"on_tov_h{h}"]
-    f = feats[["game_id", "person_id", "team_id", "game_date"]].assign(
-        exp_min=exp_min.fillna(0).to_numpy(), exp_usg=((used + 0.2 * 20) / (plays + 20)).to_numpy())
+    f = feats[["game_id", "person_id", "team_id", "game_date", "starter"]].assign(
+        exp_min=exp_min.to_numpy(), exp_usg=((used + 0.2 * 20) / (plays + 20)).to_numpy())
     pl = pg[pg["played"]].copy()
     pl["used"] = pl["fga2"] + pl["fga3"] + pl["trips2"] + pl["trips3"] + pl["tov"]
-    by_gt = {k: dict(zip(v["person_id"], zip(v["min"], v["used"])))
+    pl = pl.merge(f[["game_id", "person_id", "exp_min"]], on=["game_id", "person_id"], how="left")
+    by_gt = {k: {p: (m, u, e, st) for p, m, u, e, st in zip(v["person_id"], v["min"], v["used"], v["exp_min"],
+                                                             v["starter"])}
              for k, v in pl.groupby(["game_id", "team_id"])}
     order = pl.drop_duplicates(["game_id", "team_id"]).sort_values(["game_date", "game_id"])
     ctx_rows, player_rows = [], []
     recent: dict = {}
     last_team: dict = {}
+    last_exp: dict = {}      # latest pregame expected minutes per player
     for date, day in order.groupby("game_date", sort=True):
         updates = []
         for gid, team in day[["game_id", "team_id"]].itertuples(index=False):
@@ -151,28 +164,41 @@ def team_context(pg: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, p
                         base_min[p] = base_min.get(p, 0.0) + m / ng
                         base_used[p] = base_used.get(p, 0.0) + u / ng
             now = by_gt[(gid, team)]
-            absent = [p for p in base_min if p not in now]
-            vac_min = sum(base_min[p] for p in absent)
-            vac_used = sum(base_used[p] for p in absent)
+
+            def is_rot(p):
+                e = now[p][2] if p in now else last_exp.get(p, np.nan)
+                st = bool(now[p][3]) if p in now else False
+                return st or base_min.get(p, 0.0) >= ROTATION_BASE_MIN or (e == e and e >= ROTATION_EXP_MIN)
+
+            rot_now = [p for p in now if is_rot(p)]
+            fringe_base = [p for p in base_min if not is_rot(p)]
+            absent_rot = [p for p in base_min if p not in now and is_rot(p)]
+            vac_min = sum(base_min[p] for p in absent_rot)
+            vac_used = sum(base_used[p] for p in absent_rot)
             team_used = sum(base_used.values())
-            avail = sum(base_min.get(p, 0.0) for p in now)
-            sig_absent = sum(1 for p in absent if base_min[p] >= 15)
-            ctx_rows.append((gid, team, ng, len(base_min), len(absent), sig_absent, vac_min, vac_used,
-                             team_used, avail, 240.0 - avail if ng else np.nan,
-                             "-".join(str(p) for p in sorted(absent, key=lambda p: -base_min[p]))))
+            fringe_min = sum(base_min[p] for p in fringe_base)
+            avail_exp = sum((now[p][2] if now[p][2] == now[p][2] else 12.0) for p in rot_now) + fringe_min
+            avail_base = sum(base_min.get(p, 0.0) for p in rot_now) + fringe_min
+            ctx_rows.append((gid, team, ng, len(base_min), len(absent_rot),
+                             sum(1 for p in absent_rot if base_min[p] >= 15), vac_min, vac_used, team_used,
+                             avail_base, (240.0 - avail_base) if ng else np.nan, avail_exp, len(rot_now), fringe_min,
+                             "-".join(str(p) for p in sorted(absent_rot, key=lambda p: -base_min[p]))))
             for p in now:
                 player_rows.append((gid, p, base_min.get(p, 0.0) if ng else np.nan,
-                                    base_used.get(p, 0.0) if ng else np.nan))
-            updates.append((team, now))
-        for team, now in updates:            # same-day games never see each other
-            recent[team] = (recent.get(team, []) + [now])[-10:]
-            for p in now:
+                                    base_used.get(p, 0.0) if ng else np.nan, is_rot(p)))
+            updates.append((team, {p: (v[0], v[1]) for p, v in now.items()}, now))
+        for team, mins, now in updates:      # same-day games never see each other
+            recent[team] = (recent.get(team, []) + [mins])[-10:]
+            for p, v in now.items():
                 last_team[p] = team
+                if v[2] == v[2]:
+                    last_exp[p] = v[2]
     ctx = pd.DataFrame(ctx_rows, columns=["game_id", "team_id", "base_games", "n_baseline", "n_absent",
                                           "n_absent_15", "vacated_min", "vacated_used", "team_used_base",
-                                          "avail_base_min", "slack_min", "absent"])
+                                          "avail_base_min", "slack_min", "avail_exp_min", "n_rotation_playing",
+                                          "fringe_base_min", "absent"])
     ctx["vacated_used_share"] = ctx["vacated_used"] / ctx["team_used_base"].replace(0, np.nan)
-    pctx = pd.DataFrame(player_rows, columns=["game_id", "person_id", "base_min", "base_used"])
+    pctx = pd.DataFrame(player_rows, columns=["game_id", "person_id", "base_min", "base_used", "rotation"])
     return ctx, f.merge(pctx, on=["game_id", "person_id"], how="left")
 
 
@@ -183,7 +209,7 @@ def build_features(log=print) -> dict:
     tg = pd.read_parquet(d / "team_games.parquet")
     feats = player_features(pg, games)
     ctx, f = team_context(pg, feats)
-    feats = feats.merge(f[["game_id", "person_id", "exp_min", "exp_usg", "base_min", "base_used"]],
+    feats = feats.merge(f[["game_id", "person_id", "exp_min", "exp_usg", "base_min", "base_used", "rotation"]],
                         on=["game_id", "person_id"], how="left")
     feats = feats.merge(ctx.drop(columns=["absent"]), on=["game_id", "team_id"], how="left")
     PATHS.ensure(PATHS.features)
