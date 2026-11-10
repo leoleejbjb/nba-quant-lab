@@ -124,7 +124,8 @@ ROTATION_EXP_MIN = 12.0    # ... or expected minutes when he plays
 
 def team_context(pg: pd.DataFrame, feats: pd.DataFrame, active: dict | None = None,
                  use_starters: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Teammate-availability context per team-game, using only information public before tip-off.
+    """Teammate-availability context per team-game, from information public before tip-off - except that, without
+    ``active``, availability is the who-appeared stand-in for the inactive list (below).
 
     Baseline = the team's previous 10 games: a player's baseline minutes / plays used are his
     per-team-game averages over those games (0 when he did not play), if he has not appeared for

@@ -1,4 +1,4 @@
-.PHONY: install data models backtest report test dashboard all clean-data
+.PHONY: install data models backtest report docs test dashboard all clean-data
 
 PY ?= .venv/bin/python
 QL ?= .venv/bin/quantlab
@@ -20,6 +20,10 @@ backtest:           ## walk-forward simulation backtests: 2023-24 (tuning) -> bl
 
 report:             ## baselines, gradient boosting, matchup ablation, team-first reconciliation, summary + docs/FINDINGS_DATA.md
 	QUANTLAB_THREADS=1 $(QL) baselines && QUANTLAB_THREADS=1 $(QL) ablation && $(QL) topdown && $(QL) report
+
+docs:               ## re-render the README results block, docs/REPORT.md, docs/headline.json and docs/report.html from the summary
+	$(PY) scripts/docs/render_report.py --check && $(PY) scripts/docs/render_docs.py --check
+	$(PY) scripts/docs/render_report.py && $(PY) scripts/docs/render_docs.py && $(PY) scripts/make_report_page.py
 
 test:
 	$(PY) -m pytest

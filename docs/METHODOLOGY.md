@@ -6,13 +6,17 @@ Every rule, model and parameter in NBA Quant Lab, and which data each was fitted
 
 | Role | Seasons | Used for |
 |---|---|---|
-| History | 2020-21, 2021-22, 2022-23 | priors, training data, simulator structural constants (with 2023-24) |
-| Tuning | 2023-24 | every hyper-parameter, the simulator's calibration and structural constants (with 2021-23), the blend weight |
-| Test | 2024-25, 2025-26 | scored once with everything frozen |
+| History | 2020-21, 2021-22, 2022-23 | priors, training data, simulator structural constants (2021-22 and 2022-23, with 2023-24) |
+| Tuning | 2023-24 | the tuned hyper-parameters (half-lives and prior strengths of the EB player rates and the team style factors, team-model grid, usage exponent), the baselines' negative-binomial dispersion curves, the simulator's calibration and structural constants (with 2021-23), the blend weight; the gradient-boosting player models use fixed hyper-parameters |
+| Test | 2024-25, 2025-26 | scored with everything frozen (the final version; earlier versions were also scored on them before the review fixes) |
 
-All predictions are **walk-forward**: a forecast for a game on date *d* uses only games on dates strictly before *d*
-(players and teams play at most once per day; league-level quantities are lagged one date; same-day games never
-see each other).
+All predictions are **walk-forward**: the features of a forecast for a game on date *d* use only games on dates
+strictly before *d* (players and teams play at most once per day; league-level quantities are lagged one date;
+same-day games never see each other). Two pieces of same-day information are used on purpose: the starting five (for
+the lineups-known minutes model, the rotation rule behind the teammate context, the gradient-boosting player models'
+starter feature and the simulator's starting lineups; public about 30 minutes before tip-off) and teammate
+availability, which comes from who appeared in the game - the stand-in for the pregame inactive list, a remaining and
+measured leak (section 2).
 
 ---
 
@@ -41,9 +45,10 @@ uses the exact on-court team totals (not the box-score minutes approximation). 2
 heaves as team actions that are not field-goal attempts; they are excluded from player stats as in the official rules.
 
 **Validation.** Every stat is compared with the official box score for 2020-21..2023-24 (`box_compare` tables):
-2023-24 minutes are within 1 s for 99.97% of player-games, points exact for 99.98%, plus-minus 99.80%, every stat
-exact for 99.27%. Residual mismatches are symmetric (+1 as often as -1), i.e. post-game stat corrections that the
-archived feed does not contain. For seasons with official box scores, `min` is the official value.
+2023-24 minutes are within 1 s for 99.97% of player-games, points exact for 99.98%, plus-minus 99.80%, every counting
+stat (all but minutes and plus-minus) exact for 99.27% (99.07% including plus-minus). Residual mismatches go both ways
+(almost equally in 2020-23; in 2023-24 they lean toward the official box being higher, 132 of 231 stat differences),
+consistent with post-game stat corrections that the archived feed does not contain. For seasons with official box scores, `min` is the official value.
 
 ## 2. Pregame feature store (`features/asof.py`)
 
@@ -52,7 +57,7 @@ archived feed does not contain. For seasons with official box scores, `min` is t
   offseason to 30 days (ability does not decay over the summer). Computed per player with relative exponents and an
   exclusive shift (no cross-player cancellation; tested in `tests/test_leakage.py`).
 * **Minutes history**: decayed means (7/20/60 days), last 3/5/10 games, season average, days since last game, starts.
-* **Teammate availability (pregame only).** For each team-game the baseline is the previous 10 games. *Rotation*
+* **Teammate availability (the pregame rule).** For each team-game the baseline is the previous 10 games. *Rotation*
   players (baseline minutes >= 8, expected minutes >= 12, or starting) are *available* or not according to the
   injury report / inactive list, which is public before tip-off; *fringe* players' participation is uncertain,
   because whether the 13th man plays depends on blowouts, so fringe players enter every pregame quantity through
@@ -65,8 +70,10 @@ archived feed does not contain. For seasons with official box scores, `min` is t
   DNP-coach's decision, more often in close games - which is game information. Measured on 2023-24 with the official
   statuses (`models.minutes.exact_availability_experiment`): the minutes model's MAE is 4.362 with the stand-in and
   4.428 with the true inactive list (+0.066, 1.5%); carried through the closed-form EB projection, points MAE rises
-  from 4.368 to 4.379 (+0.011, 0.25%) and PRA from 5.738 to 5.763. The 2024-26 test numbers carry about this much
-  optimism for every model that uses projected minutes.
+  from 4.368 to 4.379 (+0.011, 0.24%) and PRA from 5.738 to 5.763. The 2024-26 test numbers of every model that uses
+  projected minutes presumably carry about this much optimism; it was measured only for the minutes model and the
+  closed-form EB projection (the gradient-boosting player models and the simulator, which read the same context, were
+  not measured separately).
 * **Lineup-blind variant.** The "no lineup information" minutes model uses a rotation rule and availability share
   that ignore today's starters (`rotation_pre`, `share_of_avail_pre`).
 * **Pregame candidates.** Deep-bench players on the team's recent list who do not appear get a not-played row with
@@ -77,7 +84,8 @@ archived feed does not contain. For seasons with official box scores, `min` is t
 Time-decayed (half-life 50 effective days), opponent-adjusted ridge (lambda 2) ratings fitted walk-forward on every
 earlier game: `points per 100 possessions = mu + offense + defense + home + back-to-back terms`, and pace
 `= pi + p_home + p_away` (half-life 12, lambda 1). The normal equations are updated incrementally (the decay
-factorizes), so each date costs O(params^2). Score uncertainty is a bivariate normal for (home, away) points whose
+factorizes), so each date costs one O(params^3) solve plus O(params^2) per game, independent of the number of earlier
+games. Score uncertainty is a bivariate normal for (home, away) points whose
 margin/total standard deviations and correlation come from earlier seasons' residuals. Hyper-parameters: grid search on
 2023-24 only.
 
@@ -116,9 +124,11 @@ A compiled (numba) kernel plays each game possession by possession (the measured
 [FINDINGS_DATA.md](FINDINGS_DATA.md), "Computational cost").
 
 **Possession.** Side events first: late-game intentional fouls (a trailing defense in the final minute, by lead and
-time left; rates estimated from 2021-24 with the lead taken before the possession's first event: a team leading by
-1-3 shoots free throws on 26% of possessions starting 24-60 s before the end and on 86% of those starting in the final
-24 s, vs 9.6% earlier in the quarter), technical free throws, team turnovers and non-shooting defensive fouls. Then a *user* is drawn
+time left; rates estimated from 2021-24 with the lead taken before the possession's first event, counting the
+unrecorded final possessions in which a leading team dribbles out the clock: a team leading by 1-3 shoots free throws
+on 26% of possessions starting 24-60 s before the end and on 77% of those starting in the final 24 s, vs 9.6% earlier
+in the quarter; a team up 10+ in the final 24 s is almost never fouled, 2%), technical free throws, team turnovers and
+non-shooting defensive fouls. Then a *user* is drawn
 from the five on offense with weights `usage^alpha x exp(eta) x usage multiplier`; his play type (TOV / 2PA / 3PA / FT
 trip) follows his own tendencies scaled by the defense's factors; the outcome is resolved: steals and offensive fouls on
 turnovers, blocks (shooter's blocked share x defenders' shot blocking), makes (logit = player skill + player shooting
@@ -129,13 +139,15 @@ offensive rebound with probability O/(O+D) of the on-court rebounding weights; o
 Possession time is Gamma (shape 4.6) with mean set by the team model's pace plus 5.1 s per offensive rebound.
 
 **End of games** (4th quarter and overtime; every rate estimated on 2021-24 possessions and shots). In the last two
-minutes possession length depends on the score (leading teams run the clock: 17.7 s with 24-60 s left; teams down 4+
-hurry: 10.0 s) and shooting gets worse by time left and score (logit shifts by window x leading / tied / down 1-3 /
-down 4+ x 2PA / 3PA, e.g. threes with 24-60 s left go in less often for everyone). With 24 seconds or less: a leading
+minutes possession length depends on the score (base length before offensive-rebound time: leading teams run the
+clock, 17.2 s with 24-60 s left; teams down 4+ hurry, 9.1 s) and shooting changes with time left and score (logit
+shifts by window x leading / tied / down 1-3 / down 4+ x 2PA / 3PA, mostly negative: e.g. with 24-60 s left threes go
+in less often for leading and trailing teams, -0.25 / -0.20 / -0.19, but more often for tied teams, +0.33). With 24 seconds or less: a leading
 team runs out the clock unless fouled; a tied team holds for the last shot (91% of real tied possessions end at the
 buzzer; a team down 1-3 holds 51% of the time, otherwise attacks quickly); shot selection follows the score (down 3:
 62% threes, 89% in the final 4 s); a held last shot and any shot in the final 4 seconds use final-seconds make rates
-by score (tied teams make 27% of twos and 19% of threes), and a heave's chances shrink with the time left. Calibrated
+by score (tied teams: 27% of twos and 19% of threes, shrunk toward the pooled final-seconds rates from the observed
+26% and 19%), and a heave's chances shrink with the time left. Calibrated
 target: real tied teams with the ball and <= 24 s left go to overtime 72.6% of the time and win 23.9%; the simulator
 gives 71.6% and 24.9%. The overall regulation-tie rate is still too low (see REPORT, Limitations).
 
@@ -145,7 +157,7 @@ sum to the planned minutes and columns to five) + error diffusion toward the pla
 persistence + noise, subject to: starters open the first and third quarters; foul trouble (2/3/4/5 fouls by quarter,
 lifted in the last six minutes): a player in foul trouble sits until the quarter's limit rises - minutes he is owed do
 not pull him back - and players with 4 / 5 fouls commit fouls at 0.55 / 0.45 times their usual rate (calibrated on
-2023-24: P(6 fouls) 0.94% simulated vs 0.91% real, P(5+) 4.7% vs 4.6%); disqualification at six fouls (he fouls no
+2023-24 games: P(6 fouls) 0.94% simulated vs 0.91% real, P(5+) 4.7% vs 4.6%, at calibration); disqualification at six fouls (he fouls no
 more and is replaced at the next possession; a disqualified player stays in only if no eligible substitute is left,
 as under NBA rules); in-game injury (2% per rotation player per game, from the 2023-24 PIT of minutes); data-driven
 garbage time (with 4 minutes left and a 21-25 point margin, starters are on the floor 29% as often as in close
@@ -154,8 +166,8 @@ games); overtime closers. Overtime is played until the tie is broken.
 **Minutes budget and calibration.** The minutes model is unbiased for rotation players, so their projections
 (minutes *if he plays*) are honoured; fringe players fill the remainder (241.5 minus rotation projections) by appearing
 more often - their participation probability is scaled, their minutes-when-playing are not (inflating those instead
-biased them by +4.9 minutes). The scaling is continuous: a deeper projected rotation always means less fringe
-participation, down to none. The budget is drawn up for every available rotation player playing; when a questionable
+biased them by +4.9 minutes). The scaling is continuous: a deeper projected rotation means less fringe
+participation, down to a floor of 3% per fringe player (`p_min`). The budget is drawn up for every available rotation player playing; when a questionable
 player (participation < 1, a scenario setting) sits, the kernel's per-game 240-minute normalisation gives his minutes
 to the players who do play. Players whose minutes or participation were set in a scenario are never rescaled. Short
 pilot runs (in which every available rotation player plays, so targets and simulated means are on the same basis)
@@ -170,15 +182,17 @@ leads mean-revert. A *team* shooting night was included initially and calibratio
 **Calibration (2023-24 only).** Real NBA scores are *less* variable than independent possessions imply (independent
 possessions give a team-points SD of ~12.8; the residual SD of a good pregame model is ~11.5 including model error), so
 the simulator has two mean-reversion terms: a logit drift against the leading team (0.034 per 10 points of lead) and
-against a team scoring above its expected pace (0.034 per 10 points). These, the player-night SDs, a handful of
+against a team scoring above its expected pace (0.034 per 10 points). These, the player-night SDs and a handful of
 nuisance multipliers (FT trips 0.918, non-shooting fouls 0.93, steals 1.064, blocks 1.05, offensive rebounding odds
-0.975, possession length 1.0124, 2P/3P logit offsets -0.035 / +0.005) and the usage exponent were set by matching
-league aggregates on the full 2023-24 backtest (a first fit on a 200-game sample did not hold on the full season and
-was replaced), margin/total dispersion and player-level variance ratios / PIT histograms. Check on 400 tuning games
-with the final values, simulated minus actual per team-game: points -0.02, made twos +0.01, made threes -0.04, FTA
-+0.01, turnovers -0.03, steals -0.07, blocks +0.04, fouls +0.11, possessions -0.06. Two gaps remain: the simulator
-takes about 2% more two-point attempts per possession than real teams (makes match, so rebounds run ~1-2% high), and
-assists are about 2% low. **Usage is super-linear**: points MAE on 150 tuning games was
+0.975, possession length 1.0124, 2P/3P logit offsets -0.035 / +0.005) were set by matching league aggregates on the
+full 2023-24 backtest (a first fit on a 200-game sample did not hold on the full season and was replaced),
+margin/total dispersion and player-level variance ratios / PIT histograms; the usage exponent was chosen by points MAE
+on 150 tuning games (below). Check on the full 2023-24 bottom-up backtest (1,230 games) with the final values,
+simulated minus actual per team-game: points +0.00, made twos +0.09, made threes -0.01, FTA -0.25, player turnovers
++0.09, steals +0.04, blocks +0.01, fouls -0.07, possessions +0.05 (`quantlab report` writes these level checks to
+FINDINGS_DATA.md). Two gaps remain: the simulator takes about 2% more two-point attempts per possession than real teams
+(makes match, so rebounds run about 2.5% high), and assists are about 1.5% low; in the test seasons blocks (+8%),
+free-throw attempts (-5%), fouls (-4%), steals (-3%) and threes (+2%) drift as well, and rebounds reach about +3%. **Usage is super-linear**: points MAE on 150 tuning games was
 4.571 / 4.440 / **4.406** / 4.457 / 4.588 for alpha = 0.7 / 1.0 / **1.3** / 1.6 / 1.9.
 
 **Accounting identities (asserted on every simulated game, `SimResult.check_invariants`, tested):**
@@ -198,13 +212,16 @@ Three environments (`GameSimulator.calibrate`):
 * **blend** (shipped: dashboard and CLI default) - the target is `w x team model + (1 - w) x bottom-up`. `w` is chosen
   on 2023-24 (`quantlab blendweight`): the blend's mean margin and total are, to first order, the same mixture of the
   team-constrained and bottom-up backtests' means, so `w` minimises margin RMSE + total RMSE of that mixture; the blend
-  environment itself is then backtested with that weight on every season.
+  environment itself is then backtested with that weight on the tuning season and both test seasons (2023-24,
+  2024-25, 2025-26).
 
 Pace always comes from the team model. Shooting is shifted, not individual scores forced, so distributions stay
-realistic. The alternative architecture (`eval/topdown.py`) samples team scores from the team model and allocates
-made baskets, misses, rebounds, assists, steals, blocks, turnovers and minutes multinomially to that simulated game's
+realistic. The alternative architecture (`eval/topdown.py`) samples team scores from the team model, draws each
+participant's minutes around his projection (rescaled so that the team's minutes sum to 240) and allocates made
+baskets, free throws, misses, rebounds, assists, steals, blocks and turnovers multinomially to that simulated game's
 participants - the simulator's pregame roster, with fringe participation sampled from the same pregame probabilities -
-by their independent per-minute projections: consistent box scores without lineups or game dynamics.
+in proportion to their per-minute projections x simulated minutes: box scores whose points add up, without lineups or
+game dynamics (rebounds are not tied to misses, there is no plus-minus or overtime, and rounded scores can tie).
 
 ## 8. Scenarios (`sim/scenario.py`)
 
@@ -233,18 +250,25 @@ correlation lift (joint / product).
   over-cover by construction (a calibrated forecast with the simulator's PRA means and SDs covers ~84%), so they are
   reported only as a secondary column. Over/under reliability uses the half-point line nearest the projection
   (floor(mean) + 0.5) and the ladder from 2 below to 2 above it.
-* Baselines share the projected minutes; non-simulation models get negative-binomial distributions whose size `r`
+* The minutes-based baselines (per-minute, opponent-adjusted, EB, gradient boosting) share the projected minutes, while
+  season and last-10 averages are per-game averages; these six models get negative-binomial distributions whose size `r`
   depends on the predicted mean (method of moments in deciles of the tuning-season predictions; a single pooled `r`
   is far too narrow for bench players and too wide for stars - for points `r` ranges from 0.9 to 13.8 across deciles).
-* Players are scored conditional on appearing; participation is the information available at tip-off (rotation
-  players' availability from the inactive-list stand-in, fringe players uncertain). Fringe candidates come from one
+* Players are scored conditional on appearing; participation follows the pregame information set (rotation
+  players' availability from the inactive-list stand-in, which also reveals coach's-decision DNPs; fringe players
+  uncertain). Fringe candidates come from one
   pregame rule (`features.asof.fringe_pool_table`: players who appeared for the team in the previous 25 days and
   have not appeared elsewhere since; participation = share of the team's games in that window). Every candidate has
-  a pregame feature row whether or not he appears (67,079 not-played candidate rows are added to the feature store),
+  a pregame feature row whether or not he appears (66,914 not-played candidate rows are added to the feature store),
   so his minutes-if-playing come from the same walk-forward minutes model and his rates from the same EB model. A
   player who appeared without being on that list (a new signing, a return from a long absence - he would be on the
   pregame active list) is added at a 5% participation floor and excluded from the participation calibration. Team metrics:
   margin/total MAE, RMSE and CRPS, win log-loss and Brier, with paired bootstrap intervals over games.
-* Matchup ablation: gradient boosting retrained without any opponent information (opponent style factors, the EB
-  expectation recomputed with neutral opponent factors, and the team-model environment replaced by the team's own
-  season-to-date averages; the player's own team's style factors are kept).
+* Matchup ablation: gradient boosting retrained without the direct opponent information (opponent style factors, the
+  EB expectation recomputed with neutral opponent factors, and the team-model environment replaced by the team's own
+  season-to-date averages; the player's own team's style factors are kept, and so are the projected minutes, whose
+  blowout-risk features come from the team model's expected margin against this opponent). The design is nested: the
+  with-opponent arm is the without-opponent arm plus the opponent information. Both are refits whose features differ
+  from the shipped model's (neither has the season-to-date / last-10 per-minute rates; both keep the own-team
+  season-to-date averages and the neutral-opponent EB expectation), so the with-opponent MAE differs slightly from the
+  shipped gradient-boosting model's (points 4.383 against 4.376).

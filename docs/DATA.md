@@ -32,7 +32,7 @@ lineup project.
 
 | Table | Rows | Content |
 |---|---:|---|
-| `player_games` | 154,391 | every player-game 2020-21..2025-26: MIN, PTS, FGA/FGM by 2/3, FTA/FTM, OREB/DREB, AST, STL, BLK, TOV, PF, +/-, starter, assisted makes, FT trips, and-ones, fouls drawn, usage, TS%, eFG%, double/triple-double flags, and on-court exposures (team/opponent possessions, shots, FT trips, turnovers, points, rebound chances). Coaches and staff charged with bench technicals (734 zero-minute rows of people who never played) are excluded |
+| `player_games` | 154,357 | every player-game 2020-21..2025-26: MIN, PTS, FGA/FGM by 2/3, FTA/FTM, OREB/DREB, AST, STL, BLK, TOV, PF, +/-, starter, assisted makes, FT trips, and-ones, fouls drawn, usage, TS%, eFG%, double/triple-double flags, and on-court exposures (team/opponent possessions, shots, FT trips, turnovers, points, rebound chances). Zero-minute rows of people charged only with a bench technical who are not listed in that game's official box score (2024-26 has none) are excluded: 768 rows, of which 734 belong to coaches and staff who never played in 2020-26 and 34 to 22 people who played in other games (players charged from the bench in games they sat out, and former player JJ Redick in 8 games as Lakers coach); 16 such rows of players listed in the 2020-24 official box as DNP or DND are kept (not played) |
 | `team_games` | 14,460 | team box score incl. team rebounds and team turnovers, possessions, opponent columns, rest days |
 | `games` | 7,230 | teams, date, tip time, score, overtime, reconciliation flags |
 | `availability` | 177,057 | 2020-21..2023-24 from the official box-score comments: `played`, `dnp_cd` (dressed but unused: "DNP - Coach's Decision" or listed at 0:00) or `out` (every DND - including "DND - Coach's Decision" - NWT, DNP-injury, rest and suspension comment). 2024-25 and 2025-26 have no official box scores, so only `played` rows exist (from the play-by-play, `source = pbp`): who was dressed but unused, or out, is unknown there |
@@ -51,8 +51,10 @@ lineup project.
 | 2024-25 | 1,230 | 1,219 | 99.901% | no official box scores in the sources |
 | 2025-26 | 1,230 | 1,226 | 99.966% | no official box scores in the sources |
 
-* **2020-22 stat mismatches** (all-stats-exact 97.4-97.7%) are symmetric (e.g. 255 steal disagreements with a net of
-  -12): post-game stat corrections that the archived feed lacks, not parsing errors. Every stat still matches >= 99%.
+* **2020-22 stat mismatches** (all-stats-exact 97.4-97.7%) go both ways almost equally (e.g. 255 steal disagreements
+  in 2021-22 with a net of -12): post-game stat corrections that the archived feed lacks, not parsing errors. Every
+  stat still matches >= 99%. In 2023-24 the 194 player-games with a difference lean slightly toward the official box
+  being higher (132 of 231 stat differences; see REPORT section 1).
 * **2022-23 minutes**: 90 games have equal-and-opposite minute pairs (e.g. +60 s / -60 s) - a substitution logged at a
   different clock time in the feed than in the box score. Counting stats are unaffected; those games are kept for
   player stats (official minutes are used) and flagged for lineup-level work.
@@ -66,19 +68,27 @@ lineup project.
   also reveals the rotation players a coach chose not to use: on 2021-24, 24.8% of the rotation players it treats as
   unavailable were in fact dressed (DNP - coach's decision), and how often that happens depends on how the game went.
   On 2023-24, where the official statuses exist, the minutes model is 0.066 minutes (1.5%) less accurate with the
-  official inactive list than with the stand-in, and points projections 0.011 (0.25%) - the size of the optimism this
-  leaves in the 2024-26 test numbers (`quantlab minutes` writes `data/models/availability_experiment.json`).
+  official inactive list than with the stand-in, and closed-form EB points projections 0.011 (0.24%) - the size of the
+  optimism this leaves in the 2024-26 test numbers (`quantlab minutes` writes the minutes result and the 24.8% share
+  to `data/models/availability_experiment.json`; `quantlab report` adds the points propagation to
+  `data/backtest/summary.json`).
 
 ## Live 2026-27 data
 
 The current season is not in the pinned mirrors. `cdn.nba.com` (schedule, live box scores and play-by-play) was added
 to the environment's network allowlist, but the NBA's CDN answered **"Access Denied"** to this client; per project
 policy a refusal is reported and never retried under a different identity (e.g. a spoofed browser). The dashboard
-therefore defines "upcoming games" by an as-of date: every game on that date is projected from earlier games only,
-which is exactly how a live projection works and has the advantage that results can be checked. When newer seasons
-are published by the mirror, adding the file and its checksum to `sources.py` is all that is needed.
+therefore defines "upcoming games" by an as-of date: every game on that date is projected from earlier games plus
+who appeared and who started in it, the stand-in for the pregame inactive list and announced starting lineups (see
+Availability; this makes the projections slightly optimistic compared with a true live projection). Projecting a past
+date this way has the advantage that results can be checked. When newer seasons are published by the mirror, add the
+file's checksum to `PBP_SHA256` in `sources.py` and move the pinned mirror commit (`SHUFINSKIY` in `sources.py`, and
+the Sources table above) to one that contains it (a fresh fetch then re-verifies the older files at that commit), add
+the season to `ALL_SEASONS` in `config.py` (used by `fetch`, `build` and `database`), and extend the hard-coded season
+lists in `models/minutes.py` (`run_minutes`) and `dashboard/state.py` (`SEASONS`).
 
 ## Terms
 
 The statistics belong to the NBA. NBA.com's Terms of Use permit personal, non-commercial use; this is a
-non-commercial research project. Raw and processed data are not committed - `quantlab fetch` re-downloads them.
+non-commercial research project. Raw and processed data are not committed - `quantlab fetch` re-downloads the raw
+files and `quantlab build` + `quantlab database` (`make data`) rebuild the processed tables.

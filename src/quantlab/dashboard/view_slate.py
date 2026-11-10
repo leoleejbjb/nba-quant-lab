@@ -12,7 +12,9 @@ def render() -> None:
     pr = state.projector()
     date = st.session_state["asof_date"]
     st.title("Slate")
-    st.caption(f"Games on {pd.Timestamp(date):%A %B %d, %Y} - projected with information available before tip-off.")
+    st.caption(f"Games on {pd.Timestamp(date):%A %B %d, %Y} - projected with pregame features and the starting fives; "
+               "who is available comes from who appeared, a stand-in for the pregame inactive list (see Data & "
+               "methods). At most 10,000 simulations per game on this page.")
     sl = pr.slate(date)
     if sl.empty:
         st.info("No games on this date.")

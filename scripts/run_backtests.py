@@ -1,9 +1,10 @@
 """Walk-forward simulation backtests.
 
-    python scripts/run_backtests.py --seasons 2023-24 --modes none,team [--n-sims 1500] [--limit N]
+    python scripts/run_backtests.py --seasons 2023-24 --modes none,team [--n-sims 1200] [--limit N]
 
-Writes data/backtest/sim_<mode>_<season>_{players,teams}.parquet. Every input is pregame
-(see src/quantlab/sim/inputs.py); the simulator parameters were fixed on 2023-24.
+Writes data/backtest/sim_<mode>_<season>_{players,teams}.parquet. Inputs are walk-forward, plus the game's
+starting fives and who appeared as the stand-in for the inactive list (see src/quantlab/sim/inputs.py); the simulator
+parameters were fixed on 2023-24.
 """
 import argparse
 import time

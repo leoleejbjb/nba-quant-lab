@@ -226,7 +226,8 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--blend-weight", type=float, default=None,
                     help="team-model weight for --modes blend (default: data/models/integration.json)")
     bt.set_defaults(fn=cmd_backtest)
-    pj = sub.add_parser("project", help="projected box score for one game (pregame information only)")
+    pj = sub.add_parser("project", help="projected box score for one game (earlier games and the starting fives; "
+                                                "availability from who appeared, the inactive-list stand-in)")
     pj.add_argument("--game-id", type=int, required=True)
     pj.add_argument("--n-sims", type=int, default=20000)
     pj.add_argument("--environment", default="blend", choices=["blend", "team", "none"])

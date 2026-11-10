@@ -1,6 +1,6 @@
 """Assemble simulator inputs (``GameSpec``) for a game from the database and pregame model outputs.
 
-Roster for a team-game (pregame information only):
+Roster for a team-game (pregame information, with who appeared standing in for the inactive list):
 
 * *rotation participants*: rotation players (baseline minutes >= 8, expected minutes >= 12, or
   starters) who are available for the game. The sources have no inactive list for the test seasons,

@@ -51,7 +51,7 @@ def test_scenario_overrides_for_fringe_players_are_not_rescaled(game, constants)
 
 
 def test_fringe_budget_is_continuous_in_rotation_minutes(game, constants):
-    """A deeper projected rotation always means less fringe participation, down to none (no jump at 241.5)."""
+    """A deeper projected rotation means less fringe participation, down to the p_min floor (no jump at 241.5)."""
     exp_fringe = []
     for total in (238.0, 241.3, 241.7, 250.0):
         g = copy.deepcopy(game)

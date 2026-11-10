@@ -66,7 +66,8 @@ def render() -> None:
     pr = state.projector()
     st.title("Scenario lab")
     st.caption("Edit the rosters and run the scenario. The baseline and the scenario are simulated with the same "
-               "random seed so that differences are not Monte Carlo noise.")
+               "random seed (common random numbers), which reduces but does not remove Monte Carlo noise in the "
+               "differences; small changes can still be noise.")
     gid = _game_picker(pr)
     if gid is None:
         return

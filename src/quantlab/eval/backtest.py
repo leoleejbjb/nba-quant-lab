@@ -1,6 +1,7 @@
 """Walk-forward simulation backtests and distributional scoring.
 
-For every game, inputs are built from pregame information only (``sim.inputs``), the
+For every game, inputs are built walk-forward (``sim.inputs``: earlier games, the starting fives and who appeared as
+the stand-in for the inactive list), the
 simulator is calibrated (planned minutes; optional team environment), and ``n`` games are
 simulated. Each player's simulated distribution is scored against his actual box score:
 

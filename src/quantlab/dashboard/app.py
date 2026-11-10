@@ -24,14 +24,17 @@ with st.sidebar:
         default_date = full[-1] if full else dates[-1]     # latest full slate (not the rest-heavy final week)
     st.selectbox("As-of date (games on this date)", dates, index=dates.index(default_date), key="asof_date",
                  format_func=lambda d: pd.Timestamp(d).strftime("%a %b %d, %Y"))
-    st.select_slider("Simulations per game", options=[5000, 10000, 20000, 40000], value=20000, key="n_sims")
+    st.select_slider("Simulations per game", options=[5000, 10000, 20000, 40000], value=20000, key="n_sims",
+                     help="The Slate page runs at most 10,000 per game.")
     st.radio("Game environment", ["blend", "team", "none"], key="environment", horizontal=True,
              format_func={"blend": "Blend", "team": "Team model", "none": "Bottom-up"}.get,
-             help="How the team-level model constrains the simulation: 'Team model' matches its expected "
-                  "points per possession, 'Bottom-up' lets player projections alone decide, 'Blend' uses the "
-                  "weight chosen on the 2023-24 tuning season (see Validation).")
-    st.caption("Every projection uses only information from dates before the as-of date "
-               "(walk-forward). Actual results are shown for comparison because these are historical dates.")
+             help="How the team-level model constrains the simulation (pace always comes from it): 'Blend' "
+                  "(default, the backtested forecast) targets a mix of the team model's and the players' points "
+                  "per possession with the weight chosen on the 2023-24 tuning season; 'Team model' matches the "
+                  "team model's efficiency; 'Bottom-up' lets player projections alone decide (see Validation).")
+    st.caption("Every projection uses features from dates before the as-of date (walk-forward), plus the game's "
+               "starting fives and who appeared, the stand-in for the pregame inactive list (see Data & methods). "
+               "Actual results are shown for comparison because these are historical dates.")
 
 pages = [
     st.Page(view_slate.render, title="Slate", icon=":material/calendar_month:", default=True),

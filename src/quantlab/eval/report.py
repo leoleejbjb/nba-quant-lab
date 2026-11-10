@@ -92,13 +92,14 @@ def player_comparison(seasons, rng=None) -> tuple[pd.DataFrame, dict]:
                 continue
             mu = b[col].to_numpy(dtype=float)
             ok = np.isfinite(mu)
-            # dispersion from the tuning season only; GBM has no tuning-season predictions (it is trained on
-            # earlier seasons), so it borrows the EB model's tuning-season dispersion curve
+            # dispersion from the tuning season only; GBM has no tuning-season predictions (2023-24 is its first
+            # training season), so it borrows the EB model's tuning-season dispersion curve
             src = col if (col in tune and tune[col].notna().any()) else f"{st}__eb"
             disp = BinnedDispersion(tune[src].to_numpy(dtype=float), tune[st].to_numpy(dtype=float))
             sc = nb_scores(mu[ok], disp(mu[ok]), yy[ok], rng)
             rows.append({"stat": st, "model": m, "n": int(ok.sum()), "mae": float(np.abs(mu[ok] - yy[ok]).mean()),
                          "rmse": float(np.sqrt(((mu[ok] - yy[ok]) ** 2).mean())), "bias": float((mu[ok] - yy[ok]).mean()),
+                         "mean_pred": float(mu[ok].mean()), "mean_obs": float(yy[ok].mean()),
                          "crps": float(sc["crps"].mean()), "pit_dev": pit_dev(sc["pit"]),
                          "cov80": cov_pit(sc["pit"]), "cov80_inclusive": float(sc["cov80"].mean()),
                          "p_pit_below_half": float((sc["pit"] < 0.5).mean()), "logscore": float(sc["logp"].mean())})
@@ -111,6 +112,7 @@ def player_comparison(seasons, rng=None) -> tuple[pd.DataFrame, dict]:
             cov80i = ((s["actual"] >= s["q10"]) & (s["actual"] <= s["q90"])).mean()
             rows.append({"stat": st, "model": name, "n": int(len(s)), "mae": float(e.abs().mean()),
                          "rmse": float(np.sqrt((e ** 2).mean())), "bias": float(e.mean()),
+                         "mean_pred": float(s["mean"].mean()), "mean_obs": float(s["actual"].mean()),
                          "crps": float(s["crps"].mean()), "pit_dev": pit_dev(s["pit"].to_numpy()),
                          "cov80": cov_pit(s["pit"].to_numpy()), "cov80_inclusive": float(cov80i),
                          "cov50": cov_pit(s["pit"].to_numpy(), 0.5), "cov90": cov_pit(s["pit"].to_numpy(), 0.9),
@@ -127,6 +129,16 @@ def player_comparison(seasons, rng=None) -> tuple[pd.DataFrame, dict]:
                 ok = np.isfinite(pp) & np.isfinite(oo)
                 rel[f"{st}|{name}|ladder"] = reliability(pp, oo)
                 rel[f"{st}|{name}|ladder"]["mean_gap"] = float(pp[ok].mean() - oo[ok].mean())
+                # and line by line (offset from the nearest half point; lines below 0.5 do not exist)
+                gaps, ns = {}, {}
+                for k in sorted((0,) + tuple(LINE_OFFSETS)):
+                    pc, oc = ("p_over", "over") if k == 0 else (f"p_over_{k:+d}", f"over_{k:+d}")
+                    if pc in s:
+                        p_, o_ = s[pc].to_numpy(float), s[oc].to_numpy(float)
+                        ok_ = np.isfinite(p_) & np.isfinite(o_)
+                        gaps[f"{k:+d}"] = float(p_[ok_].mean() - o_[ok_].mean()) if ok_.any() else None
+                        ns[f"{k:+d}"] = int(ok_.sum())
+                rel[f"{st}|{name}|ladder"]["line_gaps"], rel[f"{st}|{name}|ladder"]["line_n"] = gaps, ns
                 rel[f"{st}|{name}"]["mean_gap"] = float(np.nanmean(s["p_over"]) - np.nanmean(s["over"]))
     return pd.DataFrame(rows), {"pit": pits, "reliability": rel}
 
@@ -237,6 +249,69 @@ def team_comparison(tune_season: str, test_seasons, n_boot: int = 2000) -> dict:
     return out
 
 
+LEVEL_TEAM_STATS = ("pts", "fga2", "fgm2", "fga3", "fgm3", "fta", "ftm", "tov", "oreb", "dreb", "ast", "stl", "blk", "pf")
+
+
+def level_checks(seasons, mode: str = "blend") -> dict:
+    """Simulated minus actual levels for one simulator environment (default: the shipped blend).
+
+    * per player-game, every simulated statistic, over all player-games the backtest scored (appearing players,
+      conditional means);
+    * per team-game and per possession, the team totals credited to players (team_games' ``pl_*`` columns; points
+      and possessions are team totals);
+    * overtime: the simulated and actual overtime rates, the actual points scored in overtime per overtime game
+      (from the stints, which conserve every point, technical free throws included), and the part of the
+      total-points bias that the overtime shortfall explains (shortfall x those points)."""
+    P, T = load_sim(mode, seasons)
+    if P.empty or T.empty:
+        return {}
+    out = {"mode": mode, "seasons": list(seasons)}
+    pl = {}
+    for st, g in P.groupby("stat"):
+        g = g.drop_duplicates(["game_id", "person_id"], keep=False)
+        pl[st] = {"n": int(len(g)), "pred": float(g["mean"].mean()), "actual": float(g["actual"].mean()),
+                  "rel": float(g["mean"].mean() / g["actual"].mean() - 1) if g["actual"].mean() else None}
+    out["player"] = pl
+    tg = pd.read_parquet(PATHS.processed("all") / "team_games.parquet")
+    tg = tg[tg["game_id"].isin(T["game_id"])]
+    sides = []
+    for side, home in (("home", True), ("away", False)):
+        x = T[["game_id", "sim_poss"]].copy()
+        for st in LEVEL_TEAM_STATS:
+            c = "sim_home_pts" if st == "pts" and side == "home" else f"sim_{side}_{st}"
+            if c in T:
+                x[st] = T[c].to_numpy()
+        a = tg[tg["is_home"] == home]
+        a = a[["game_id", "poss"] + [c for c in (["pts"] + [f"pl_{st}" for st in LEVEL_TEAM_STATS if st != "pts"])
+                                     if c in a]]
+        sides.append(x.merge(a.rename(columns=lambda c: f"act_{c[3:] if c.startswith('pl_') else c}"
+                                      if c != "game_id" else c), on="game_id"))
+    d = pd.concat(sides, ignore_index=True)
+    team = {"team_games": int(len(d)),
+            "poss": {"pred": float(d["sim_poss"].mean()), "actual": float(d["act_poss"].mean()),
+                     "diff": float(d["sim_poss"].mean() - d["act_poss"].mean())}}
+    for st in LEVEL_TEAM_STATS:
+        if st in d and f"act_{st}" in d:
+            pr_, ac_ = d[st].to_numpy(float), d[f"act_{st}"].to_numpy(float)
+            team[st] = {"pred": float(pr_.mean()), "actual": float(ac_.mean()), "diff": float(pr_.mean() - ac_.mean()),
+                        "rel": float(pr_.mean() / ac_.mean() - 1),
+                        "rel_per_poss": float((pr_.sum() / d["sim_poss"].sum()) / (ac_.sum() / d["act_poss"].sum()) - 1)}
+    out["team"] = team
+    games = pd.read_parquet(PATHS.processed("all") / "games.parquet")[["game_id", "ot"]]
+    games = games[games["game_id"].isin(T["game_id"])]
+    ot_pts = []
+    for s_ in seasons:
+        st_ = pd.read_parquet(PATHS.processed(s_) / "stints.parquet", columns=["game_id", "period", "home_pts", "away_pts"])
+        ot_pts.append(st_[st_["period"] > 4].groupby("game_id")[["home_pts", "away_pts"]].sum().sum(axis=1))
+    ot_pts = pd.concat(ot_pts)
+    ot_pts = ot_pts[ot_pts.index.isin(games.loc[games["ot"].astype(bool), "game_id"])]
+    sim_ot, act_ot = float(T["sim_ot"].mean()), float(games["ot"].mean())
+    out["overtime"] = {"sim_rate": sim_ot, "actual_rate": act_ot, "actual_pts_per_ot_game": float(ot_pts.mean()),
+                       "ot_games": int(len(ot_pts)),
+                       "total_bias_from_ot_shortfall": float((sim_ot - act_ot) * ot_pts.mean())}
+    return out
+
+
 def choose_blend_weight(season: str = TUNING_SEASON, log=print) -> dict:
     """Team-model weight ``w`` of the simulator's blend environment (target PPP = w x team model + (1 - w) x
     bottom-up), chosen on the tuning season. The blend's mean margin and total are, to first order, the same
@@ -292,6 +367,8 @@ def run_report(log=print) -> dict:
         summary[f"minutes_{name}"] = minutes_comparison(seasons).to_dict("records")
         log(f"[report] player comparison {name}: {len(pc)} rows")
     summary["teams"] = team_comparison(TUNING_SEASON, TEST_SEASONS)
+    summary["levels"] = {"test": level_checks(list(TEST_SEASONS)), "tuning": level_checks([TUNING_SEASON]),
+                         "tuning_bottom_up": level_checks([TUNING_SEASON], "none")}
     ax = PATHS.models / "availability_experiment.json"
     if ax.exists():
         summary["availability_experiment"] = {**json.loads(ax.read_text()), **availability_propagation()}

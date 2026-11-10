@@ -128,7 +128,7 @@ def reliability_svg(rel: dict, w=420, h=300) -> str:
 def team_table(tm: dict) -> str:
     names = {"team_model": "Team model (ratings)", "sim_none": "Simulation, bottom-up",
              "sim_team": "Simulation, team-constrained", "sim_blend": "Simulation, blend (shipped)",
-             "posthoc_blend": "Post-hoc average of means (reference)"}
+             "posthoc_blend": "Post-hoc weighted average of means (reference)"}
     keys = [("margin_mae", "Spread MAE"), ("margin_rmse", "Spread RMSE"), ("total_mae", "Total MAE"),
             ("total_rmse", "Total RMSE"), ("margin_crps", "Spread CRPS"), ("total_crps", "Total CRPS"),
             ("win_logloss", "Win log-loss")]
@@ -236,9 +236,9 @@ footer {{ font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--li
 <header>
   <div class="eyebrow">Walk-forward backtest · NBA regular season</div>
   <h1>NBA Quant Lab Validation</h1>
-  <p class="lede">Every player's minutes, points, rebounds, assists and the rest, forecast before tip-off and simulated
-  possession by possession, scored against what actually happened. Tuned on 2023-24, then frozen and tested once on
-  2024-25 and 2025-26.</p>
+  <p class="lede">Every player's minutes, points, rebounds, assists and the rest, forecast walk-forward from earlier
+  games and the starting fives (who appeared stands in for the inactive list) and simulated possession by possession,
+  scored against what actually happened. Tuned on 2023-24, then frozen and scored on 2024-25 and 2025-26.</p>
   <div class="facts"><span class="chip">{n_games:,} test games</span><span class="chip">{n_test:,} test player-games</span>
   <span class="chip">7,230 games reconstructed from play-by-play</span>
   <span class="chip">{cost.get('us_per_game', 0):.0f} µs per simulated game</span></div>
@@ -247,13 +247,16 @@ footer {{ font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--li
         body.append('<section><h2>What the evidence says</h2><ol class="find">' +
                     "".join(f"<li>{f}</li>" for f in findings) + "</ol></section>")
     body.append(f"""<section><h2>Player statistics: point accuracy</h2>
-<p>Mean absolute error on identical player-games, conditional on the player appearing. Bold marks the best model per
-statistic. Shaded rows are the possession simulator.</p>
+<p>Mean absolute error on identical player-games, conditional on the player appearing. Bold marks the lowest value
+per statistic before rounding; values that tie at the three decimals shown are effectively level. Shaded rows are the
+possession simulator.</p>
 {player_table(test_rows, "mae", ".3f")}</section>""")
     body.append(f"""<section><h2>Player statistics: full distributions</h2>
 <p>CRPS scores the whole predicted distribution (lower is better). Calibration error is the distance of the PIT
-histogram from flat (0 is perfect). Non-simulation models use a negative-binomial distribution around their point
-forecast whose dispersion depends on the predicted mean (fitted on the tuning season).</p>
+histogram from flat (0 is perfect). The six baseline models (season average to gradient boosting) use a
+negative-binomial distribution around their point forecast whose dispersion depends on the predicted mean (fitted on
+the tuning season; gradient boosting, which has no tuning-season predictions, uses the empirical-Bayes model's curve).
+The team-first reconciliation's distributions come from its own simulated draws.</p>
 <h3>CRPS</h3>{player_table(test_rows, "crps", ".3f")}
 <h3>Calibration error (PIT, L1 from uniform)</h3>{player_table(test_rows, "pit_dev", ".3f")}
 <h3>80% interval coverage (central 80% of the forecast, ties randomized; 0.800 = calibrated)</h3>{player_table(test_rows, "cov80", ".3f", lower_better=False)}
@@ -271,7 +274,8 @@ decile, against how often the over hit.</figcaption></figure>
 <div class="callout"><h3>Reading it</h3><p>Points on the diagonal mean a stated 60% over happens 60% of the time.
 Mean gap, predicted minus observed, at the line nearest the projection (percentage points):
 {", ".join(f"{STAT_LABEL[k]} {100 * rel[f'{k}|sim_blend']['mean_gap']:+.1f}" for k in STATS if f"{k}|sim_blend" in rel)};
-pooled over the ladder, where errors of opposite sign partly cancel:
+pooled over the ladder (the gaps differ by line; for rebounds, assists, threes and blocks the over-prediction
+shrinks at the lines above the projection):
 {", ".join(f"{STAT_LABEL[k]} {100 * rel[f'{k}|sim_blend|ladder']['mean_gap']:+.1f}" for k in STATS if f"{k}|sim_blend|ladder" in rel)}.
 Every probability comes from the joint simulated games, so a two-leg parlay is the share of games in which both legs
 hit, never a product of marginals.</p></div></div></section>""")
@@ -291,14 +295,15 @@ hit, never a product of marginals.</p></div></div></section>""")
     axp = (f"""<p class="note">Who is available is taken from who appeared (the sources have no inactive list for the
 test seasons), which also reveals rotation players a coach chose not to use. On {ax['season']}, where the official
 statuses exist, the lineups-known model's MAE is {ax['mae_appearance_proxy']:.3f} with that stand-in and
-{ax['mae_inactive_list']:.3f} with the real inactive list: the test numbers carry about {ax['mae_leak']:.2f} minutes
-of optimism.</p>""" if ax else "")
+{ax['mae_inactive_list']:.3f} with the real inactive list: the test numbers presumably carry about
+{ax['mae_leak']:.2f} minutes of optimism.</p>""" if ax else "")
     body.append(f"""<section><h2>Minutes</h2><p>Projected minutes for every player who appeared. The simulator enforces
 240 player-minutes per team (plus overtime) with five on the floor at all times.</p>{''.join(mt)}{axp}</section>""")
     body.append(f"""<section><h2>Team forecasts: does the player layer help?</h2>
 <p>Spread and total accuracy on {n_games:,} test games. The shipped forecast is the simulator's blend environment
-(team-model weight {tm['blend_weight']:.2f}, chosen on 2023-24), backtested as such; the post-hoc average of means is
-shown for reference only. Overtime: {t_test['actual_ot_rate']:.1%} of test games, simulated
+(team-model weight {tm['blend_weight']:.2f}, chosen on 2023-24), backtested as such; the post-hoc
+{tm['blend_weight']:.2f}/{1 - tm['blend_weight']:.2f} weighted average of the team-model and bottom-up means is shown
+for reference only. Bold marks the lowest value per column before rounding, the reference row excluded. Overtime: {t_test['actual_ot_rate']:.1%} of test games, simulated
 {t_test.get('sim_blend', {}).get('p_ot', float('nan')):.1%}.</p>
 {team_table(t_test)}
 <p class="note">Paired bootstrap over games, reduction in squared error versus the team model (positive is better):
@@ -308,21 +313,26 @@ shown for reference only. Overtime: {t_test['actual_ot_rate']:.1%} of test games
         rows = "".join(f"<tr><th scope=\"row\">{STAT_LABEL.get(k, k)}</th><td>{v['with_opponent']['mae']:.4f}</td>"
                        f"<td>{v['without_opponent']['mae']:.4f}</td><td>{v['mae_gain']:+.4f}</td>"
                        f"<td>{v['mae_gain_ci95'][0]:+.4f} to {v['mae_gain_ci95'][1]:+.4f}</td></tr>" for k, v in abl.items())
-        body.append(f"""<section><h2>Matchups</h2><p>Gradient boosting retrained without any opponent information
-(opponent style factors, the opponent factors inside the closed-form expectation, and the team-model environment,
-replaced by the team's own season-to-date averages). Gains are the reduction in MAE from adding it back, with
-game-clustered bootstrap intervals.</p>
+        gbm_pts = next((r["mae"] for r in test_rows if r["model"] == "gbm" and r["stat"] == "pts"), float("nan"))
+        body.append(f"""<section><h2>Matchups</h2><p>Gradient boosting refitted twice, nested: once without the
+explicit opponent information (opponent style factors, the opponent factors inside the closed-form expectation, and
+the team-model environment, replaced by the team's own season-to-date averages) and once with it added back. Both
+refits' features differ from the shipped model's (no recent per-minute rates; the own-team averages are kept in both),
+so the with-opponent points MAE is {abl['pts']['with_opponent']['mae']:.3f} against {gbm_pts:.3f} for the shipped
+model. Both refits also keep the projected minutes, whose blowout-risk features come from the team-model spread, so a
+little opponent information remains in the "without" refit. Gains are the reduction in MAE from adding the opponent
+information, with game-clustered bootstrap intervals.</p>
 <div class="scroll"><table class="num"><thead><tr><th>Stat</th><th>With opponent</th><th>Without</th><th>Gain</th>
 <th>95% CI</th></tr></thead><tbody>{rows}</tbody></table></div></section>""")
     if part.get("calibration"):
         c = part["calibration"]
         rows = "".join(f"<tr><th scope=\"row\">{p:.2f}</th><td>{o:.2f}</td><td>{n:,}</td></tr>"
                        for p, o, n in zip(c["pred"], c["obs"], c["n"]))
-        body.append(f"""<section><h2>Uncertain participation</h2><p>Rotation players' availability comes from the
-injury-report stand-in. Deep-bench appearances are uncertain: they depend on blowouts. Simulated participation
+        body.append(f"""<section><h2>Uncertain participation</h2><p>Rotation players' availability comes from who
+appeared (the stand-in for the injury report). Deep-bench appearances are uncertain: they depend on blowouts. Simulated participation
 probabilities of the fringe candidates listed by the pregame rule against who actually appeared ({part['season']},
 {part['games']} games):</p>
-<div class="scroll"><table class="num"><thead><tr><th>Predicted P(play)</th><th>Observed</th><th>Players</th></tr></thead>
+<div class="scroll"><table class="num"><thead><tr><th>Predicted P(play)</th><th>Observed</th><th>Player-games</th></tr></thead>
 <tbody>{rows}</tbody></table></div></section>""")
     body.append(f"""<footer>Data: NBA liveData play-by-play 2020-21 to 2025-26 and NBA.com box scores through 2023-24 (pinned
 public mirrors, SHA-256 verified), non-commercial research use. Generated by scripts/make_report_page.py from
