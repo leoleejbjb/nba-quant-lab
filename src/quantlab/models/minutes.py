@@ -34,7 +34,7 @@ FEATURES = ["exp_min", "min_l3", "min_l5", "min_l10", "last_min", "season_min_av
 STARTER_FEATURES = ["starter", "n_starters_known_min"]
 GBM_PARAMS = dict(objective="regression", learning_rate=0.03, num_leaves=31, min_data_in_leaf=200,
                   feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=5.0, verbose=-1,
-                  num_threads=4, seed=7)
+                  num_threads=4, seed=7, deterministic=True, force_row_wise=True)
 N_ROUNDS = 700
 DEBUT_MINUTES = 12.0   # baseline guess for a player with no NBA history
 
@@ -163,3 +163,23 @@ def run_minutes(log=print) -> pd.DataFrame:
                     index=FEATURES + STARTER_FEATURES).sort_values(ascending=False)
     (PATHS.models / "minutes_importance.json").write_text(json.dumps((imp / imp.sum()).round(4).to_dict(), indent=2))
     return ev
+
+
+def save_season_models(log=print) -> None:
+    """Persist, per season S, the lineups-known minutes model trained on seasons < S, plus the feature
+    frame, so the scenario engine can re-project minutes after a lineup change without leakage."""
+    feats = pd.read_parquet(PATHS.features / "player_asof.parquet")
+    tp = pd.read_parquet(PATHS.models / "team_predictions.parquet")
+    tg = pd.read_parquet(PATHS.processed("all") / "team_games.parquet")
+    f = minutes_frame(feats, tp, tg)
+    cols = FEATURES + STARTER_FEATURES
+    keep = ["game_id", "person_id", "team_id", "season", "played", "min", "starter_raw"] + \
+           sorted(set(cols) | {"avail_exp_min", "base_used", "team_used_base", "fringe_base_min"})
+    f["starter_raw"] = f["starter"]
+    f[[c for c in keep if c in f.columns]].to_parquet(PATHS.models / "minutes_features.parquet", index=False)
+    played = f[f["played"]]
+    seasons = sorted(played["season"].unique())
+    for s in seasons[2:]:
+        train = played[(played["season"] < s) & (played["season"] > seasons[0])]
+        _fit(train, cols).save_model(str(PATHS.models / f"minutes_gbm_{s}.txt"))
+        log(f"[minutes] saved model for {s} ({len(train):,} rows)")

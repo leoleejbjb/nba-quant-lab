@@ -67,7 +67,9 @@ def _rates_dict(row: pd.Series) -> dict:
 
 
 def team_spec(store: InputStore, game_id: int, team_id: int, minutes_col: str = "pred_gbm",
-              min_sd: float | None = None) -> TeamSpec:
+              min_sd: float | None = None, exclude: set | None = None) -> TeamSpec:
+    """``exclude``: players appearing for the opponent in this game (e.g. just traded) - never fringe here."""
+    exclude = exclude or set()
     g = store.games.loc[game_id]
     date = g["game_date"]
     f = store.by_game[game_id]
@@ -107,7 +109,7 @@ def team_spec(store: InputStore, game_id: int, team_id: int, minutes_col: str = 
                           (store.pg["game_date"] >= date - pd.Timedelta(days=25)) & store.pg["played"]]
         for pid, grp in recent.groupby("person_id"):
             pid = int(pid)
-            if pid in seen or pid in absent_rot or len(players) >= 15:
+            if pid in seen or pid in absent_rot or pid in exclude or len(players) >= 15:
                 continue
             later = store.pg[(store.pg["person_id"] == pid) & (store.pg["game_date"] < date) & store.pg["played"]]
             if len(later) and int(later.iloc[-1]["team_id"]) != team_id:
@@ -137,8 +139,11 @@ def minutes_sd(m: float, starter: bool, override: float | None = None) -> float:
 
 def game_spec(store: InputStore, game_id: int, minutes_col: str = "pred_gbm") -> GameSpec:
     g = store.games.loc[game_id]
-    home = team_spec(store, game_id, int(g["home_team_id"]), minutes_col)
-    away = team_spec(store, game_id, int(g["away_team_id"]), minutes_col)
+    f = store.by_game[game_id]
+    playing = {int(t): set(f.loc[(f["team_id"] == t) & f["played"], "person_id"].astype(int))
+               for t in (g["home_team_id"], g["away_team_id"])}
+    home = team_spec(store, game_id, int(g["home_team_id"]), minutes_col, exclude=playing[int(g["away_team_id"])])
+    away = team_spec(store, game_id, int(g["away_team_id"]), minutes_col, exclude=playing[int(g["home_team_id"])])
     tp = store.tp.loc[game_id] if game_id in store.tp.index else None
     pace = float(tp["pace"] * 1.0) if tp is not None else 99.0
     if tp is not None:

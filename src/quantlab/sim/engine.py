@@ -86,7 +86,7 @@ class GameSpec:
 class SimParams:
     """Simulator parameters. Defaults were calibrated on the 2023-24 tuning season only
     (scripts/calibrate_sim.py, docs/METHODOLOGY.md); the 2024-25 / 2025-26 test seasons were not used."""
-    usage_alpha: float = 1.0
+    usage_alpha: float = 1.3        # shot shares in a lineup ~ usage^alpha (super-linear; tuned on 2023-24)
     sd_pace: float = 0.015          # game-level pace night (log scale)
     sd_team_shoot: float = 0.0      # team shooting night (logit); calibration drove it to zero
     sd_player_shoot: float = 0.09   # player shooting night (logit)
@@ -102,8 +102,8 @@ class SimParams:
     p_injury: float = 0.01          # per rotation player per game (exits, does not return)
     foul_limits: tuple = (2, 3, 4, 5)
     garbage_core: int = 7           # players subject to garbage-time benching (by planned minutes)
-    score_effect: float = 0.04      # logit drift against the leading team per 10 points of lead
-    own_effect: float = 0.04        # logit drift against a team scoring above its expected pace (per 10 pts)
+    score_effect: float = 0.034     # logit drift against the leading team per 10 points of lead
+    own_effect: float = 0.034       # logit drift against a team scoring above its expected pace (per 10 pts)
     trip_mult: float = 0.93         # nuisance calibrations (tuning season only)
     stl_mult: float = 1.06
     blk_mult: float = 1.06
@@ -229,11 +229,42 @@ class GameSimulator:
                 self.dfac[t, j] = team.def_factors.get(k, 1.0)
         lg = {"blk": 0.0108, "ast_rate": 0.159, "tov_per_poss": 0.142, "fg2": 0.545, "fg3": 0.36, **self.g.league}
         self.lg = lg
+        self._minutes_budget()
         # planned minutes: rotation players their projection; fringe players their conditional minutes
         self.plan = np.where(self.rotation, self.min_mean,
                              np.where(self.p_play > 0, self.min_mean / np.maximum(self.p_play, 0.05), 0.0))
         self.plan = np.where(self.exists, np.minimum(self.plan, self.cap), 0.0)
         self._templates()
+
+    def _minutes_budget(self, total: float = 241.5, p_max: float = 0.95) -> None:
+        """Honour the minutes model for rotation players; fringe players fill the remainder by
+        *appearing more often*, not by playing longer when they appear.
+
+        The minutes model is unbiased for rotation players, so their projections are kept. The residual
+        ``total - sum(rotation)`` goes to fringe players: each keeps his conditional minutes (his typical
+        minutes when he plays) and his participation probability is scaled (capped at ``p_max``) until the
+        expected fringe minutes match the residual; whatever fringe players cannot absorb is spread over the
+        rotation. (Diagnosed on 2023-24: without this the simulator over-allocated rotation minutes by
+        ~2.5 per team-game; inflating fringe *conditional* minutes instead biased them by +4.9.)
+        """
+        for t in range(2):
+            rot = self.exists[t] & self.rotation[t]
+            fr = self.exists[t] & ~self.rotation[t] & (self.p_play[t] > 0)
+            rot_sum = float((self.min_mean[t] * self.p_play[t])[rot].sum())
+            if rot_sum > total and rot_sum > 0:
+                self.min_mean[t, rot] *= total / rot_sum
+                rot_sum = total
+            budget = total - rot_sum
+            if fr.any() and budget > 0:
+                cond = self.min_mean[t, fr] / np.maximum(self.p_play[t, fr], 0.05)   # minutes when he plays
+                cur = float((self.p_play[t, fr] * cond).sum())
+                k = budget / max(cur, 1e-6)
+                newp = np.minimum(self.p_play[t, fr] * k, p_max)
+                self.p_play[t, fr] = newp
+                self.min_mean[t, fr] = newp * cond
+                budget -= float((newp * cond).sum())
+            if budget > 0.5 and rot_sum > 0:
+                self.min_mean[t, rot] *= (rot_sum + budget) / rot_sum
 
     def _templates(self) -> None:
         """Planned on-court propensity per regulation minute: rotation templates fitted by IPF."""
