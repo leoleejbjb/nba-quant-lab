@@ -12,3 +12,4 @@ data/sims/
 *.tmp.parquet
 *.tmp.json
 .DS_Store
+dist/

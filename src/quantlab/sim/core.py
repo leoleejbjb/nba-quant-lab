@@ -25,8 +25,8 @@ F_TOV, F_3SH, F_FG2, F_FG3, F_TRIP, F_OREB, F_AST = range(7)
  P_INJ, P_BASE_MEAN, P_SHAPE, P_B_OREB, P_TECH, P_TEAM_TOV, P_NSF, P_TEAM_REB, P_TEAM_OREB_FRAC, P_LG_TOV,
  P_LG_BLK, P_LG_AST, P_SHIFT_H, P_SHIFT_A, P_CORE, P_FOUL1, P_FOUL2, P_FOUL3, P_FOUL4, P_LG_FG2, P_LG_FG3,
  P_FRINGE_PEN, P_SCORE_EFF, P_TRIP_MULT, P_STL_MULT, P_BLK_MULT, P_FG2_OFF, P_FG3_OFF, P_OWN_EFF, P_RE_RHO,
- P_PPP_REF_H, P_PPP_REF_A) = range(43)
-N_PARAMS = 43
+ P_PPP_REF_H, P_PPP_REF_A, P_FRINGE_SD) = range(44)
+N_PARAMS = 44
 
 
 @njit(cache=True, inline="always")
@@ -78,9 +78,11 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                 played[t, i] = True
                 if rotation[t, i]:
                     v = plan[t, i] + min_sd[t, i] * np.random.standard_normal()
-                    v = min(max(v, 0.5), min(cap[t, i], 46.0))
                 else:
-                    v = plan[t, i]
+                    # fringe minutes when used vary widely (2-20 min): mean-preserving lognormal noise
+                    sf = prm[P_FRINGE_SD]
+                    v = plan[t, i] * math.exp(sf * np.random.standard_normal() - 0.5 * sf * sf)
+                v = min(max(v, 0.5), min(cap[t, i], 46.0))
                 target[t, i] = v
                 tot += v
         if tot > 0:

@@ -94,10 +94,13 @@ def team_spec(store: InputStore, game_id: int, team_id: int, minutes_col: str = 
                                       _rates_dict(rr), min_mean=m, min_sd=minutes_sd(m, bool(r.starter), min_sd),
                                       p_play=1.0, starter=bool(r.starter), rotation=True))
         else:
+            # fringe: participation share from recent games; minutes *if he plays* from the minutes model
+            # (a pregame, conditional-on-playing projection); unconditional expectation = share x conditional
             base = float(np.nan_to_num(r.base_min, nan=2.0))
-            share = np.clip(base / max(np.nan_to_num(r.exp_min, nan=8.0), 1.0), 0.05, 0.95)
+            share = float(np.clip(base / max(np.nan_to_num(r.exp_min, nan=8.0), 1.0), 0.05, 0.95))
+            cond = m if np.isfinite(m) and m > 0 else float(np.nan_to_num(r.exp_min, nan=8.0))
             players.append(PlayerSpec(int(r.person_id), store.names.get(r.person_id, str(r.person_id)),
-                                      _rates_dict(rr), min_mean=max(base, 0.3), min_sd=3.0, p_play=float(share),
+                                      _rates_dict(rr), min_mean=max(share * cond, 0.3), min_sd=3.0, p_play=share,
                                       starter=False, rotation=False))
         seen.add(int(r.person_id))
     # fringe players from the baseline who did not appear (pregame they were available-but-uncertain)

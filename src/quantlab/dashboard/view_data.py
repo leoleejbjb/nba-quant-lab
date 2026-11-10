@@ -21,9 +21,11 @@ def render() -> None:
         o = q.get("official_box", {})
         rows.append({"Season": s, "Games": q["games"], "Usable games": q["games_ok"],
                      "Valid lineup time": q["valid_time_share"], "Player-games": q["player_games_played"],
-                     "Minutes within 1 s": o.get("minutes_within_1s"), "PTS exact": o.get("pts_exact"),
-                     "REB exact": o.get("reb_exact"), "AST exact": o.get("ast_exact"),
-                     "+/- exact": o.get("plus_minus_exact"), "All stats exact": o.get("all_stats_exact")})
+                     "Minutes within 1 s": o.get("minutes_within_1s", float("nan")),
+                     "PTS exact": o.get("pts_exact", float("nan")), "REB exact": o.get("reb_exact", float("nan")),
+                     "AST exact": o.get("ast_exact", float("nan")),
+                     "+/- exact": o.get("plus_minus_exact", float("nan")),
+                     "All stats exact": o.get("all_stats_exact", float("nan"))})
     df = pd.DataFrame(rows)
     st.subheader("Play-by-play reconstruction vs official NBA.com box scores")
     st.dataframe(df, hide_index=True, use_container_width=True,

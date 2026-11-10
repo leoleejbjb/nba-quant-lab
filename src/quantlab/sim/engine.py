@@ -99,7 +99,8 @@ class SimParams:
     rot_persist: float = 0.30       # persistence bonus for players already on court
     rot_noise: float = 0.12
     fringe_penalty: float = 0.3     # fringe players are chosen only when their deficit is clearly larger
-    p_injury: float = 0.01          # per rotation player per game (exits, does not return)
+    p_injury: float = 0.02          # per rotation player per game (exits early, does not return); 2023-24 PIT
+    fringe_sd: float = 0.7          # lognormal SD of a fringe player's minutes when he is used
     foul_limits: tuple = (2, 3, 4, 5)
     garbage_core: int = 7           # players subject to garbage-time benching (by planned minutes)
     score_effect: float = 0.034     # logit drift against the leading team per 10 points of lead
@@ -329,6 +330,7 @@ class GameSimulator:
         prm[core.P_RE_RHO] = p.re_rho
         prm[core.P_PPP_REF_H] = self.teams[0].target_ppp or 1.15
         prm[core.P_PPP_REF_A] = self.teams[1].target_ppp or 1.15
+        prm[core.P_FRINGE_SD] = p.fringe_sd
         return prm
 
     def _arrays(self):
