@@ -126,7 +126,7 @@ def game_table(events: pd.DataFrame) -> pd.DataFrame:
     g = g.join(last, how="right").reset_index().rename(columns={"index": "game_id"})
     # timeActual is UTC; NBA games tip 12:00-22:30 ET, i.e. 16:00-03:30 UTC. Shift by -6h so that
     # late-evening (Pacific) games keep their local calendar date.
-    t = pd.to_datetime(g["first_time"], utc=True, errors="coerce")
+    t = pd.to_datetime(g["first_time"], utc=True, errors="coerce", format="ISO8601")
     g["tip_utc"] = t
     g["game_date"] = (t - pd.Timedelta(hours=6)).dt.tz_localize(None).dt.normalize()
     return g.drop(columns=["first_time", "home_vote", "away_vote"]).sort_values("game_id").reset_index(drop=True)
