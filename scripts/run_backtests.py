@@ -16,10 +16,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seasons", default="2023-24")
     ap.add_argument("--modes", default="none")
-    ap.add_argument("--n-sims", type=int, default=1500)
-    ap.add_argument("--blend-weight", type=float, default=0.5)
+    ap.add_argument("--n-sims", type=int, default=1200)
+    ap.add_argument("--blend-weight", type=float, default=None,
+                    help="team-model weight for blend (default: data/models/integration.json)")
     ap.add_argument("--limit", type=int, default=0)
     a = ap.parse_args()
+    from quantlab.live import default_blend_weight
+    w = a.blend_weight if a.blend_weight is not None else default_blend_weight()
     store = InputStore()
     for season in a.seasons.split(","):
         ids = store.games[store.games["season"] == season].sort_values("game_date").index.tolist()
@@ -29,7 +32,7 @@ def main():
             env = "blend" if mode.startswith("blend") else mode
             tag = f"sim_{mode}_{season}"
             t0 = time.time()
-            run_backtest(ids, n_sims=a.n_sims, environment=env, env_weight=a.blend_weight, store=store, tag=tag)
+            run_backtest(ids, n_sims=a.n_sims, environment=env, env_weight=w, store=store, tag=tag)
             print(f"[{tag}] {len(ids)} games in {time.time() - t0:.0f}s", flush=True)
 
 

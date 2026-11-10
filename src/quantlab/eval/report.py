@@ -134,7 +134,7 @@ def player_comparison(seasons, rng=None) -> tuple[pd.DataFrame, dict]:
 def minutes_comparison(seasons) -> pd.DataFrame:
     ev = pd.read_csv(PATHS.models / "minutes_eval.csv")
     mp = pd.read_parquet(PATHS.models / "minutes_predictions.parquet")
-    mp = mp[mp["season"].isin(seasons)]
+    mp = mp[mp["season"].isin(seasons) & mp.get("played", True)]
     rows = []
     for m in [c for c in mp.columns if c.startswith("pred_")]:
         e = mp[m] - mp["min"]
@@ -189,6 +189,9 @@ def team_comparison(tune_season: str, test_seasons, n_boot: int = 2000) -> dict:
             _, T = load_sim(m, seasons)
             if T.empty:
                 continue
+            if m == "blend" and "env_weight" in T and not np.allclose(T["env_weight"], w_star):
+                raise ValueError(f"sim_blend backtests were run with weight {sorted(T['env_weight'].unique())}, "
+                                 f"integration.json says {w_star}: re-run `quantlab backtest --modes blend`")
             d = d.merge(T[[c for c in cols if c in T]].add_suffix(f"_{m}").rename(columns={f"game_id_{m}": "game_id"}),
                         on="game_id")
         return d.dropna(subset=["margin"])
@@ -291,7 +294,7 @@ def run_report(log=print) -> dict:
     summary["teams"] = team_comparison(TUNING_SEASON, TEST_SEASONS)
     ax = PATHS.models / "availability_experiment.json"
     if ax.exists():
-        summary["availability_experiment"] = json.loads(ax.read_text())
+        summary["availability_experiment"] = {**json.loads(ax.read_text()), **availability_propagation()}
     summary["consistency"] = consistency_analysis()
     abl = PATHS.backtest / "opponent_ablation.json"
     if abl.exists():
@@ -306,6 +309,27 @@ def run_report(log=print) -> dict:
         summary["cost"] = {"error": str(e)}
     (PATHS.backtest / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
     return summary
+
+
+def availability_propagation() -> dict:
+    """Carry the two minutes projections of the inactive-list experiment (stand-in vs official inactive list)
+    through the closed-form EB projection: how much the stand-in flatters points, rebounds, assists and PRA."""
+    path = PATHS.models / "availability_preds.parquet"
+    if not path.exists():
+        return {}
+    from .baselines import add_model_inputs, eb_expectations, load_frame
+    pr = pd.read_parquet(path)
+    df = load_frame()
+    season = json.loads((PATHS.models / "availability_experiment.json").read_text())["season"]
+    d = add_model_inputs(df[df["played"] & (df["season"] == season)].copy())
+    d = d.merge(pr, on=["game_id", "person_id"], how="inner").reset_index(drop=True)
+    out = {"eb_n": int(len(d))}
+    for name in ("appearance_proxy", "inactive_list"):
+        dd = d.assign(pred_gbm=d[f"pred_{name}"])
+        e = eb_expectations(dd)
+        for st_ in ("pts", "reb", "ast", "pra"):
+            out[f"eb_{st_}_mae_{name}"] = float((e[st_] - dd[st_]).abs().mean())
+    return out
 
 
 def participation_analysis(season: str = TUNING_SEASON, n_games: int = 600, seed: int = 3) -> dict:

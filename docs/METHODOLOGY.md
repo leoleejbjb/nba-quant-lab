@@ -69,6 +69,8 @@ archived feed does not contain. For seasons with official box scores, `min` is t
   optimism for every model that uses projected minutes.
 * **Lineup-blind variant.** The "no lineup information" minutes model uses a rotation rule and availability share
   that ignore today's starters (`rotation_pre`, `share_of_avail_pre`).
+* **Pregame candidates.** Deep-bench players on the team's recent list who do not appear get a not-played row with
+  the same pregame features, so the minutes and rate models project every candidate identically, appeared or not.
 
 ## 3. Team model (`models/team.py`) - the game-level engine
 
@@ -234,10 +236,12 @@ correlation lift (joint / product).
   is far too narrow for bench players and too wide for stars - for points `r` ranges from 0.9 to 13.8 across deciles).
 * Players are scored conditional on appearing; participation is the information available at tip-off (rotation
   players' availability from the inactive-list stand-in, fringe players uncertain). Fringe candidates come from one
-  pregame rule (players who appeared for the team in the previous 25 days and have not appeared elsewhere since;
-  participation = share of the team's games in that window, minutes-if-playing = minutes per appearance); a player
-  who appeared without being on that list (a new signing, a return from a long absence - he would be on the pregame
-  active list) is added at a 5% participation floor and excluded from the participation calibration. Team metrics:
+  pregame rule (`features.asof.fringe_pool_table`: players who appeared for the team in the previous 25 days and
+  have not appeared elsewhere since; participation = share of the team's games in that window). Every candidate has
+  a pregame feature row whether or not he appears (67,079 not-played candidate rows are added to the feature store),
+  so his minutes-if-playing come from the same walk-forward minutes model and his rates from the same EB model. A
+  player who appeared without being on that list (a new signing, a return from a long absence - he would be on the
+  pregame active list) is added at a 5% participation floor and excluded from the participation calibration. Team metrics:
   margin/total MAE, RMSE and CRPS, win log-loss and Brier, with paired bootstrap intervals over games.
 * Matchup ablation: gradient boosting retrained without any opponent information (opponent style factors, the EB
   expectation recomputed with neutral opponent factors, and the team-model environment replaced by the team's own

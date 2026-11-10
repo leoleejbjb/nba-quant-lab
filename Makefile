@@ -12,11 +12,14 @@ data:               ## download (pinned, checksum-verified) + reconstruct 6 seas
 models:             ## walk-forward features, team model, minutes, rates, opponent factors, simulator constants
 	$(QL) features && $(QL) team && $(QL) minutes && $(QL) rates && $(QL) opponent && $(QL) constants
 
-backtest:           ## walk-forward simulation backtests for 2023-24 (tuning) and 2024-26 (test) (~1 h, 4 cores)
-	$(QL) backtest --modes none,team
+backtest:           ## walk-forward simulation backtests: 2023-24 (tuning) -> blend weight -> blend; 2024-26 (test) (~1.5 h, 4 cores)
+	QUANTLAB_THREADS=1 $(QL) backtest --season 2023-24 --modes none,team
+	$(QL) blendweight
+	QUANTLAB_THREADS=1 $(QL) backtest --season 2023-24 --modes blend
+	QUANTLAB_THREADS=1 $(QL) backtest --season 2024-25,2025-26 --modes none,team,blend
 
-report:             ## baselines, gradient boosting, team-first reconciliation, summary + docs/FINDINGS_DATA.md
-	QUANTLAB_THREADS=1 $(QL) baselines && $(QL) topdown && $(QL) report
+report:             ## baselines, gradient boosting, matchup ablation, team-first reconciliation, summary + docs/FINDINGS_DATA.md
+	QUANTLAB_THREADS=1 $(QL) baselines && QUANTLAB_THREADS=1 $(QL) ablation && $(QL) topdown && $(QL) report
 
 test:
 	$(PY) -m pytest

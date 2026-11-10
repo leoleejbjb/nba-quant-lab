@@ -135,7 +135,9 @@ def simulate_game(team_pred: pd.Series, players: pd.DataFrame, n: int, rng, frin
     return out
 
 
-def run_topdown(seasons, n: int = 1500, log=print) -> pd.DataFrame:
+def run_topdown(seasons, n: int = 1200, log=print) -> pd.DataFrame:
+    """``n`` draws per game - the simulation backtests' count, so sample-based CRPS carries the same finite-draw
+    penalty for both."""
     from ..sim.engine import GameSimulator, load_constants
     from ..sim.inputs import InputStore, game_spec
     store = InputStore()

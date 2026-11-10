@@ -108,14 +108,14 @@ class SimParams:
     score_effect: float = 0.034     # logit drift against the leading team per 10 points of lead
     own_effect: float = 0.034       # logit drift against a team scoring above its expected pace (per 10 pts)
     tov_mult: float = 1.0           # nuisance calibrations: team-level event rates matched to the 2023-24
-    trip_mult: float = 0.895        # tuning season (makes, attempts, FTA, steals, blocks, possessions, OREB%)
-    stl_mult: float = 1.025
-    blk_mult: float = 1.03
+    trip_mult: float = 0.918        # tuning season (full 2023-24 backtest: makes, FTA, fouls, steals, blocks,
+    stl_mult: float = 1.064         # possessions, OREB%)
+    blk_mult: float = 1.05
     oreb_mult: float = 0.975
     fg2_offset: float = -0.035
-    fg3_offset: float = 0.05
-    duration_scale: float = 1.0155
-    nsf_scale: float = 0.88
+    fg3_offset: float = 0.005
+    duration_scale: float = 1.0124
+    nsf_scale: float = 0.93
     min_sd_scale: float = 1.35      # scales every player's planned-minutes noise
     hold_u: float = 1.5             # a last-shot hold leaves U(0, hold_u) seconds on the clock
     heave_window: float = 4.0       # possessions starting with less than this left get one hurried shot
@@ -237,6 +237,7 @@ class GameSimulator:
         self.usage_mult = np.ones((2, P))
         self.cap = np.full((2, P), 48.0)
         self.locked = np.zeros((2, P), dtype=np.bool_)
+        self.in_pool = np.ones((2, P), dtype=np.bool_)
         for t, team in enumerate(self.teams):
             for i, pl in enumerate(team.players):
                 self.exists[t, i] = True
@@ -249,6 +250,7 @@ class GameSimulator:
                 self.usage_mult[t, i] = pl.usage_mult
                 self.cap[t, i] = pl.minutes_cap
                 self.locked[t, i] = pl.locked
+                self.in_pool[t, i] = pl.in_pool
             avail = self.exists[t] & (self.p_play[t] > 0)
             if (self.starter[t] & avail).sum() != 5:
                 key = self.min_mean[t] + 100 * (self.starter[t] & avail) - 1e6 * ~avail
@@ -271,7 +273,7 @@ class GameSimulator:
         self.plan = np.where(self.exists, np.minimum(self.plan, self.cap), 0.0)
         self._templates()
 
-    def _minutes_budget(self, total: float = 241.5, p_max: float = 0.95) -> None:
+    def _minutes_budget(self, total: float = 241.5, p_max: float = 0.95, p_min: float = 0.03) -> None:
         """Honour the minutes model for rotation players; fringe players fill the remainder by
         *appearing more often*, not by playing longer when they appear.
 
@@ -284,6 +286,10 @@ class GameSimulator:
         a deeper projected rotation always means less fringe participation, down to none; whatever fringe
         players cannot absorb is spread over the rotation. Players whose minutes or participation were set by
         a scenario (``locked``) keep them: their minutes come off the budget first and they are never rescaled.
+        Fringe participation never falls below ``p_min`` (deep-bench players still appear now and then in games
+        whose rotation projections fill the budget). Players listed only because they appeared in the game
+        being forecast (``in_pool`` False) keep their floor participation and stay out of the budget, so their
+        presence does not move anyone else's numbers.
         (Diagnosed on 2023-24: without this the simulator over-allocated rotation minutes by ~2.5 per
         team-game; inflating fringe *conditional* minutes instead biased them by +4.9.)
         """
@@ -291,7 +297,7 @@ class GameSimulator:
             ex = self.exists[t] & (self.p_play[t] > 0)
             lk = ex & self.locked[t]
             rot = ex & self.rotation[t] & ~lk
-            fr = ex & ~self.rotation[t] & ~lk
+            fr = ex & ~self.rotation[t] & ~lk & self.in_pool[t]
             avail = max(total - float(self.min_mean[t, lk].sum()), 0.0)
             rot_sum = float(self.min_mean[t, rot].sum())
             if rot_sum > avail and rot_sum > 0:
@@ -302,7 +308,7 @@ class GameSimulator:
                 cond = self.min_mean[t, fr] / np.maximum(self.p_play[t, fr], 1e-6)   # minutes when he plays
                 cur = float((self.p_play[t, fr] * cond).sum())
                 k = max(budget, 0.0) / max(cur, 1e-6)
-                newp = np.minimum(self.p_play[t, fr] * k, p_max)
+                newp = np.clip(self.p_play[t, fr] * k, min(p_min, p_max), p_max)
                 self.p_play[t, fr] = newp
                 self.min_mean[t, fr] = newp * cond
                 budget -= float((newp * cond).sum())

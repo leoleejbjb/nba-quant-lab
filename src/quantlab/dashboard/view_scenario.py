@@ -47,6 +47,9 @@ def build_scenario(base: pd.DataFrame, ed: pd.DataFrame) -> Scenario:
             sc.minutes[pid] = float(e["Proj MIN"])
         if abs(float(e["P(play)"]) - float(b["P(play)"])) > 1e-6:
             sc.availability[pid] = float(e["P(play)"])
+        elif pid in sc.minutes and not bool(b["rotation"]) and sc.minutes[pid] < 6:
+            # a deep-bench minutes edit keeps the participation shown in the table (the simulated, post-budget one)
+            sc.availability[pid] = float(b["P(play)"])
         if abs(float(e["Usage x"]) - 1.0) > 1e-6:
             sc.usage[pid] = float(e["Usage x"])
         if float(e["MIN cap"]) < 48.0:

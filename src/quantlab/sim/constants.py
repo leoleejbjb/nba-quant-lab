@@ -62,6 +62,20 @@ def _lead_index(lead: np.ndarray) -> np.ndarray:
     return np.where(lead >= 1, 0, np.where(lead >= -3, 1 - lead, 5))
 
 
+CHANGE_OF_POSSESSION = ("made_fg", "def_rebound", "turnover", "ft_made", "jumpball")
+
+
+def run_outs(ps: pd.DataFrame) -> pd.DataFrame:
+    """The possession that is never recorded: after the last recorded possession of the 4th quarter ends with a
+    change of possession and time left, the other team holds the ball until the buzzer without an event (a
+    leading team dribbling out the clock). It starts at that end time, with that team's lead, and has no trip."""
+    last = ps.sort_values(["game_id", "end_s"]).groupby("game_id").tail(1)
+    last = last[(last["end_s"] < 2880.0 - 0.5) & last["reason"].isin(CHANGE_OF_POSSESSION)]
+    return pd.DataFrame({"start_s": last["end_s"].to_numpy(),
+                         "lead": -(last["lead_start"] + last["points"]).to_numpy(),
+                         "trip": np.zeros(len(last), dtype=bool)})
+
+
 def late_game_fouling(poss: pd.DataFrame) -> dict:
     """P(a possession of the *leading* team includes a non-and-one FT trip) late in the 4th quarter by lead size
     and time left, vs. the same rate earlier in the 4th quarter (the excess is intentional fouling).
@@ -69,10 +83,13 @@ def late_game_fouling(poss: pd.DataFrame) -> dict:
     Windows: the final minute (``leading``, kept for reference) and its two parts, 24-60 s left and the final 24 s
     (``leading_by_window``). The lead is the offense's lead before the possession's first event (its own points
     excluded) and the possession starts when the previous one ended (``possessions.start_s``), matching the
-    simulator, which decides on intentional fouls at the start of a possession from the score at that moment."""
+    simulator, which decides on intentional fouls at the start of a possession from the score at that moment.
+    Unrecorded final possessions (a leading team running out the clock) are added (``run_outs``): without them
+    more than half of the leading teams' final-24-second possessions were missing from the denominators."""
     ps = poss[poss["period"] == 4]
     d = pd.DataFrame({"start_s": ps["start_s"].to_numpy(), "lead": ps["lead_start"].to_numpy(),
                       "trip": (ps["n_trips"] > 0).to_numpy()})
+    d = pd.concat([d, run_outs(ps)], ignore_index=True)
     late = d[d["start_s"] >= 2820]
     early = d[(d["start_s"] >= 2160) & (d["start_s"] < 2700)]
     base = float(early["trip"].mean())
@@ -88,10 +105,11 @@ def late_game_fouling(poss: pd.DataFrame) -> dict:
             "not_leading_p_trip": float(tie["trip"].mean())}
 
 
-def end_game(poss: pd.DataFrame) -> dict:
+def end_game(poss: pd.DataFrame, b_per_oreb: float = 5.1) -> dict:
     """End-of-game behaviour in the 4th quarter and overtime (pre-test seasons):
 
-    * ``dur``: mean possession duration (s) of possessions *not* ending in free throws, by time left
+    * ``dur``: mean base possession duration (s; offensive-rebound time removed, the simulator adds it back) of
+      possessions *not* ending in free throws, by time left
       (60-120 s, 24-60 s) and score (leading / tied / down 1-3 / down 4+): leading teams run the clock,
       trailing teams hurry;
     * ``hold``: share of possessions starting with 4-24 s left that end at the buzzer (last shot), tied and
@@ -104,7 +122,8 @@ def end_game(poss: pd.DataFrame) -> dict:
     p = poss[poss["period"] >= 4].copy()
     p["pend"] = pend[poss["period"].to_numpy() >= 4]
     p["tleft"] = p["pend"] - p["start_s"]
-    p["dur"] = p["end_s"] - p["start_s"]
+    # the simulator adds b_per_oreb seconds per offensive rebound on top of the drawn duration: use the base part
+    p["dur"] = p["end_s"] - p["start_s"] - b_per_oreb * p["n_oreb"]
     p["grp"] = _lead_group(p["lead_start"].to_numpy())
     out: dict = {"groups": ["leading", "tied", "down 1-3", "down 4+"]}
     nf = p[p["n_trips"] == 0]
@@ -267,7 +286,7 @@ def compute_constants(log=print) -> dict:
     c["tech_fta_per_team_game"] = float(pg["fta_tech"].sum() / len(tg))
     del pf_ft, plays
     c["late_game"] = late_game_fouling(poss)
-    c["end_game"] = end_game(poss)
+    c["end_game"] = end_game(poss, c["poss_time"]["b_per_oreb"])
     log(f"[sim constants] templates {len(c['templates'])}, poss time a={a:.2f}s b={b:.2f}s/OREB shape={shape:.2f}, "
         f"team reb share {c['team_reb_share']:.3f}, non-FT def fouls/play {c['nonft_def_fouls_per_opp_play']:.4f}, "
         f"tech FTA/team-game {c['tech_fta_per_team_game']:.3f}")

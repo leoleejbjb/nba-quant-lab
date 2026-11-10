@@ -62,10 +62,10 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"     # Python 3.10+
 ```bash
 make data        # download (pinned, SHA-256 verified) + reconstruct 6 seasons + database   (~3 min)
 make models      # walk-forward features, team model, minutes, rates, opponent factors     (~5 min)
-make backtest    # walk-forward simulation backtests, 2023-24 tuning + 2024-26 test        (~1 h, 4 cores)
-make report      # baselines, gradient boosting, team-first model, summary, FINDINGS_DATA  (~10 min)
+make backtest    # simulation backtests: 2023-24 -> blend weight -> blend; 2024-26 test    (~1.5 h, 4 cores)
+make report      # baselines, GBM, matchup ablation, team-first model, summary, FINDINGS    (~15 min)
 make dashboard   # http://localhost:8501
-make test        # 29 tests
+make test        # 37 tests
 ```
 
 Project one game from the command line (only information available before tip-off is used):
@@ -125,7 +125,7 @@ src/quantlab/
   eval/        backtest.py, baselines.py, topdown.py, report.py, writeup.py
   dashboard/   Streamlit app (slate, box score, player & props, scenario lab, comparison, validation, data)
   live.py      projection service (as-of-date slates, scenarios with minutes re-projection)
-tests/         29 tests: PBP rules, leakage, simulator invariants, props, scenarios
+tests/         37 tests: PBP rules, leakage, simulator invariants, props, scenarios, review regressions
 docs/          REPORT.md, METHODOLOGY.md, DATA.md, FINDINGS_DATA.md (auto-generated), screenshots
 ```
 

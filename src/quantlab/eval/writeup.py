@@ -106,11 +106,14 @@ def write_findings(summ: dict | None = None) -> str:
                 "for rotation players' availability, which also reveals coach's-decision DNPs. On "
                 f"{ax['season']} the official statuses exist: of {ax['absent_rotation_n']:,} absent rotation player-games "
                 f"in 2021-24, {ax['absent_rotation_status_share'].get('dnp_cd', 0):.1%} were dressed but unused.", "",
-                "| Minutes model | Stand-in (who appeared) | Official inactive list | Difference |", "|---|---:|---:|---:|",
-                f"| Lineups known | {ax['mae_appearance_proxy']:.3f} | {ax['mae_inactive_list']:.3f} | "
-                f"{ax['mae_inactive_list'] - ax['mae_appearance_proxy']:+.3f} |",
-                f"| No lineup information | {ax['mae_appearance_proxy_pre']:.3f} | {ax['mae_inactive_list_pre']:.3f} | "
-                f"{ax['mae_inactive_list_pre'] - ax['mae_appearance_proxy_pre']:+.3f} |", ""]
+                "| MAE | Stand-in (who appeared) | Official inactive list | Difference |", "|---|---:|---:|---:|",
+                f"| Minutes (lineups-known model) | {ax['mae_appearance_proxy']:.3f} | {ax['mae_inactive_list']:.3f} | "
+                f"{ax['mae_inactive_list'] - ax['mae_appearance_proxy']:+.3f} |"]
+        for st_ in ("pts", "reb", "ast", "pra"):
+            a, b = ax.get(f"eb_{st_}_mae_appearance_proxy"), ax.get(f"eb_{st_}_mae_inactive_list")
+            if a is not None and b is not None:
+                out.append(f"| {st_.upper()} (closed-form EB with those minutes) | {a:.3f} | {b:.3f} | {b - a:+.3f} |")
+        out.append("")
     co = summ.get("consistency")
     if co:
         out += ["## Internal consistency: adding up independently projected players (test seasons)", "",

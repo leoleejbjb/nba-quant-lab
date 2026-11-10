@@ -97,7 +97,7 @@ def normalize_team(f: pd.DataFrame, pred: pd.Series, total: float = 241.5, suffi
     enter the budget only through their baseline minutes, so normalization never uses who played in
     garbage time. ``suffix="_pre"`` uses the lineup-blind rotation rule.
     """
-    rot = f[f"rotation{suffix}"] == 1
+    rot = (f[f"rotation{suffix}"] == 1) & f["played"]          # rotation participants (pregame stand-in)
     rot_sum = pred.where(rot, 0.0).groupby([f["game_id"], f["team_id"]]).transform("sum")
     budget = (total - f[f"fringe_base_min{suffix}"].fillna(0)).clip(lower=150)
     scale = (budget / rot_sum.replace(0, np.nan)).clip(0.8, 1.25).fillna(1.0)
@@ -105,13 +105,15 @@ def normalize_team(f: pd.DataFrame, pred: pd.Series, total: float = 241.5, suffi
 
 
 def walk_forward_minutes(f: pd.DataFrame, seasons: list[str], log=print) -> tuple[pd.DataFrame, dict]:
-    """Predictions for played player-games of ``seasons`` (each season trained on all earlier seasons)."""
+    """Predictions (minutes if he plays) for the player-games of ``seasons`` - played rows and pregame fringe
+    candidates who did not appear - each season trained on the played rows of all earlier seasons."""
     played = f[f["played"]].copy()
+    rows = f                         # every row is a pregame quantity; only played rows are trained / scored
     all_seasons = sorted(played["season"].unique())
     outs, models = [], {}
     for s in seasons:
         train = played[(played["season"] < s) & (played["season"] > all_seasons[0])]   # skip the cold-start season
-        test = played[played["season"] == s].copy()
+        test = rows[rows["season"] == s].copy()
         b = baselines(test)
         for c in b:
             test[f"pred_{c}"] = b[c].to_numpy()
@@ -123,7 +125,8 @@ def walk_forward_minutes(f: pd.DataFrame, seasons: list[str], log=print) -> tupl
         test["pred_gbm_pre_norm"] = normalize_team(test, test["pred_gbm_pre"], suffix="_pre")
         models[s] = {"lineups_known": m_b, "pregame": m_a}
         outs.append(test)
-        log(f"[minutes] {s}: trained on {len(train):,} player-games, predicted {len(test):,}")
+        log(f"[minutes] {s}: trained on {len(train):,} player-games, predicted {int(test['played'].sum()):,} "
+            f"(+ {int((~test['played']).sum()):,} pregame candidates who did not appear)")
     return pd.concat(outs), models
 
 
@@ -161,13 +164,14 @@ def run_minutes(log=print) -> pd.DataFrame:
     tg = pd.read_parquet(PATHS.processed("all") / "team_games.parquet")
     f = minutes_frame(feats, tp, tg)
     pred, models = walk_forward_minutes(f, ["2023-24", "2024-25", "2025-26"], log=log)
-    ev = evaluate_minutes(pred)
+    ev = evaluate_minutes(pred[pred["played"]])
     PATHS.ensure(PATHS.models)
-    keep = ["game_id", "person_id", "team_id", "season", "game_date", "min", "starter", "rotation"] + \
+    keep = ["game_id", "person_id", "team_id", "season", "game_date", "min", "starter", "rotation", "played"] + \
            [c for c in pred.columns if c.startswith("pred_")]
     pred[keep].to_parquet(PATHS.models / "minutes_predictions.parquet", index=False)
     ev.to_csv(PATHS.models / "minutes_eval.csv", index=False)
-    residual_table(pred[pred["season"] == "2023-24"], col="pred_gbm").to_csv(PATHS.models / "minutes_residuals.csv", index=False)
+    pl = pred[pred["played"]]
+    residual_table(pl[pl["season"] == "2023-24"], col="pred_gbm").to_csv(PATHS.models / "minutes_residuals.csv", index=False)
     # final model for live use: trained on everything up to the last season
     played = f[f["played"] & (f["season"] > sorted(f["season"].unique())[0])]
     for name, cols in (("lineups_known", FEATURES + STARTER_FEATURES), ("pregame", FEATURES_PRE)):
@@ -206,15 +210,18 @@ def exact_frame(f: pd.DataFrame) -> pd.DataFrame:
     from ..features.asof import CTX_VARIANT_COLS
     x = f[f["game_id"].isin(ctx["game_id"])].drop(columns=CTX_VARIANT_COLS + ["rotation"])
     x = x.merge(ctx[["game_id", "team_id"] + CTX_VARIANT_COLS], on=["game_id", "team_id"], how="left")
-    x = x.merge(pctx[["game_id", "person_id", "rotation"]], on=["game_id", "person_id"], how="left")
+    x = x.merge(pctx[["game_id", "team_id", "person_id", "rotation"]], on=["game_id", "team_id", "person_id"],
+                how="left")
     x["rotation"] = x["rotation"].eq(True).astype(float)
     x["share_of_avail"] = x["exp_min"] / x["avail_exp_min"].replace(0, np.nan)
     return x
 
 
 def exact_availability_experiment(season: str = "2023-24", log=print) -> dict:
-    """What the appearance stand-in for the inactive list is worth: train on the history seasons and predict
-    ``season`` once with the stand-in (who appeared) and once with the official inactive list, same rows."""
+    """What the appearance stand-in for the inactive list is worth: train the lineups-known model on the history
+    seasons and predict ``season`` once with the stand-in (who appeared) and once with the official inactive
+    list, on the same rows. Saves both prediction sets (``availability_preds.parquet``); ``quantlab report``
+    carries them through the closed-form EB projection to points (it needs the rate and team-factor files)."""
     feats = pd.read_parquet(PATHS.features / "player_asof.parquet")
     tp = pd.read_parquet(PATHS.models / "team_predictions.parquet")
     tg = pd.read_parquet(PATHS.processed("all") / "team_games.parquet")
@@ -229,14 +236,10 @@ def exact_availability_experiment(season: str = "2023-24", log=print) -> dict:
         train = pl[(pl["season"] < season) & (pl["season"] > seasons[0])]
         test = pl[pl["season"] == season]
         m = _fit(train, cols)
-        preds[name] = pd.Series(m.predict(test[cols].astype(np.float32)), index=test.set_index(
-            ["game_id", "person_id"]).index)
-        mp = _fit(train, FEATURES_PRE if name == "appearance_proxy" else FEATURES)
-        preds[name + "_pre"] = pd.Series(mp.predict(test[FEATURES_PRE if name == "appearance_proxy"
-                                                         else FEATURES].astype(np.float32)),
-                                         index=preds[name].index)
+        preds[name] = pd.Series(m.predict(test[cols].astype(np.float32)),
+                                index=pd.MultiIndex.from_frame(test[["game_id", "person_id"]]))
         if name == "appearance_proxy":
-            actual = test.set_index(["game_id", "person_id"])["min"]
+            actual = pd.Series(test["min"].to_numpy(), index=preds[name].index)
     common = preds["appearance_proxy"].index.intersection(preds["inactive_list"].index)
     y = actual.reindex(common)
     for k, v in preds.items():
@@ -254,24 +257,9 @@ def exact_availability_experiment(season: str = "2023-24", log=print) -> dict:
     out["absent_rotation_status_share"] = {k: round(float(v), 4) for k, v in
                                            ab["status"].fillna("not_listed").value_counts(normalize=True).items()}
     out["absent_rotation_n"] = int(len(ab))
-    # propagation to points: the closed-form EB points projection with each set of projected minutes
-    try:
-        from ..eval.baselines import add_model_inputs, eb_expectations, load_frame
-        df = load_frame()
-        d = add_model_inputs(df[df["played"] & (df["season"] == season)].copy()).reset_index(drop=True)
-        key = pd.MultiIndex.from_frame(d[["game_id", "person_id"]])
-        ok = key.isin(common)
-        d = d[ok].reset_index(drop=True)
-        key = pd.MultiIndex.from_frame(d[["game_id", "person_id"]])
-        for name in ("appearance_proxy", "inactive_list"):
-            dd = d.copy()
-            dd["pred_gbm"] = preds[name].reindex(key).to_numpy()
-            e = eb_expectations(dd)
-            for st_ in ("pts", "reb", "ast", "pra"):
-                out[f"eb_{st_}_mae_{name}"] = float((e[st_] - dd[st_]).abs().mean())
-        out["eb_n"] = int(len(d))
-    except Exception as exc:          # pragma: no cover - informative only
-        out["eb_error"] = str(exc)
+    pd.DataFrame({"game_id": common.get_level_values(0), "person_id": common.get_level_values(1),
+                  **{f"pred_{k}": v.reindex(common).to_numpy() for k, v in preds.items()}}).to_parquet(
+        PATHS.models / "availability_preds.parquet", index=False)
     (PATHS.models / "availability_experiment.json").write_text(json.dumps(out, indent=2))
     log(f"[minutes] inactive-list experiment {season}: {out}")
     return out

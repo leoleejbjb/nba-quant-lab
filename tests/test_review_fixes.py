@@ -5,7 +5,6 @@ baseline's participants, the NB dispersion and the end-of-game logic."""
 from __future__ import annotations
 
 import copy
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -14,7 +13,7 @@ from quantlab.eval.backtest import discrete_scores
 from quantlab.eval.baselines import BinnedDispersion, nb_dispersion
 from quantlab.eval.topdown import per_minute_expectations, simulate_game
 from quantlab.sim.engine import GameSimulator, SimParams
-from quantlab.sim.inputs import fringe_pool
+from quantlab.features.asof import fringe_pool_table
 from quantlab.sim.scenario import Scenario, apply
 
 
@@ -77,19 +76,25 @@ def test_over_under_line_is_the_nearest_half_point():
 
 
 def test_fringe_pool_does_not_depend_on_todays_appearance():
-    date = pd.Timestamp("2024-01-20")
+    """One pregame rule: today's game never changes who is a candidate or his numbers."""
     pg = pd.DataFrame({
-        "team_id": [1] * 6, "person_id": [7, 7, 8, 9, 7, 8],
-        "game_id": [1, 2, 2, 3, 4, 4],
+        "team_id": [1] * 7, "person_id": [7, 7, 8, 9, 7, 8, 5],
+        "game_id": [1, 2, 2, 3, 4, 4, 4],
         "game_date": pd.to_datetime(["2024-01-05", "2024-01-10", "2024-01-10", "2024-01-15", "2024-01-20",
-                                     "2024-01-20"]),
-        "played": [True, True, True, True, True, True], "min": [5.0, 3.0, 9.0, 2.0, 30.0, 12.0]})
-    store = SimpleNamespace(pg=pg, last_team_before=lambda pid, before: 1)
-    pool = fringe_pool(store, 1, date, set())
-    # today's game (game 4) changes nothing: same players, shares and minutes as without it
-    store2 = SimpleNamespace(pg=pg[pg["game_id"] != 4], last_team_before=lambda pid, before: 1)
-    assert pool == fringe_pool(store2, 1, date, set())
-    assert {p for p, _, _ in pool} == {7, 8, 9}
+                                     "2024-01-20", "2024-01-20"]),
+        "played": [True] * 7, "min": [5.0, 3.0, 9.0, 2.0, 30.0, 12.0, 20.0]})
+    pool = fringe_pool_table(pg)
+    today = pool[pool["game_id"] == 4].sort_values("person_id")
+    assert today["person_id"].tolist() == [7, 8, 9]                   # 5 appears today only: not a candidate
+    # dropping today's appearances changes nothing for today
+    pg2 = pg[pg["game_id"] != 4]
+    pool2 = fringe_pool_table(pd.concat([pg2, pd.DataFrame({"team_id": [1], "person_id": [7], "game_id": [4],
+                                                            "game_date": [pd.Timestamp("2024-01-20")],
+                                                            "played": [False], "min": [0.0]})]))
+    today2 = pool2[pool2["game_id"] == 4].sort_values("person_id")
+    assert today[["person_id", "share", "cond_window"]].to_numpy().tolist() == \
+        today2[["person_id", "share", "cond_window"]].to_numpy().tolist()
+    assert abs(today.loc[today["person_id"] == 7, "share"].iloc[0] - 2 / 3) < 1e-9   # 2 of the team's 3 games
 
 
 def test_team_first_baseline_only_credits_sampled_participants():
@@ -133,3 +138,20 @@ def test_tied_last_possession_rarely_loses(game, constants):
     assert tied.sum() > 50
     assert (end[tied] < 0).mean() < 0.10                      # the defense rarely wins from a tied last possession
     assert (end[tied] == 0).mean() > 0.5
+
+
+def test_player_added_because_he_appeared_does_not_move_anyone_else(game, constants):
+    """A player listed only because he appeared (in_pool False) keeps his floor participation and stays out of the
+    minutes budget, so the other players' pregame numbers are identical with or without him."""
+    from quantlab.sim.engine import PlayerSpec
+    base = GameSimulator(copy.deepcopy(game), SimParams(), constants)
+    g = copy.deepcopy(game)
+    extra = copy.deepcopy(g.home.players[-1])
+    extra.person_id, extra.in_pool, extra.p_play, extra.min_mean = 999, False, 0.05, 0.05 * 9.0
+    assert isinstance(extra, PlayerSpec)
+    g.home.players.append(extra)
+    sim = GameSimulator(g, SimParams(), constants)
+    n = len(game.home.players)
+    assert np.allclose(sim.p_play[0, :n], base.p_play[0, :n])
+    assert np.allclose(sim.min_mean[0, :n], base.min_mean[0, :n])
+    assert abs(sim.p_play[0, n] - 0.05) < 1e-12

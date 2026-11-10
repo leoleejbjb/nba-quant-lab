@@ -133,12 +133,13 @@ def team_table(tm: dict) -> str:
             ("total_rmse", "Total RMSE"), ("margin_crps", "Spread CRPS"), ("total_crps", "Total CRPS"),
             ("win_logloss", "Win log-loss")]
     rows = [(k, v) for k, v in tm.items() if isinstance(v, dict) and "margin_rmse" in v]
-    best = {k: min(v[k] for _, v in rows) for k, _ in keys}
+    best = {k: min(v[k] for name, v in rows if name != "posthoc_blend") for k, _ in keys}   # reference row excluded
     out = ['<div class="scroll"><table class="num"><thead><tr><th>Forecast</th>' +
            "".join(f"<th>{t}</th>" for _, t in keys) + "</tr></thead><tbody>"]
     for k, v in rows:
         cls = ' class="sim"' if k in ("sim_none", "sim_team", "sim_blend") else ""
-        cells = "".join(f"<td>{'<b>' if abs(v[m] - best[m]) < 1e-12 else ''}{v[m]:.3f}{'</b>' if abs(v[m] - best[m]) < 1e-12 else ''}</td>" for m, _ in keys)
+        hit = lambda m: k != "posthoc_blend" and abs(v[m] - best[m]) < 1e-12
+        cells = "".join(f"<td>{'<b>' if hit(m) else ''}{v[m]:.3f}{'</b>' if hit(m) else ''}</td>" for m, _ in keys)
         out.append(f"<tr{cls}><th scope=\"row\">{names[k]}</th>{cells}</tr>")
     out.append("</tbody></table></div>")
     return "".join(out)

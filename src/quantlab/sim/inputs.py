@@ -9,11 +9,12 @@ Roster for a team-game (pregame information only):
   dressed but not used (coach's decision); ``models.minutes.exact_availability_experiment`` measures
   what that is worth on 2023-24, where the official inactive list exists. Their minutes come from the
   walk-forward minutes model.
-* *fringe candidates*: one pregame rule for everyone - every player who appeared for the team in the
-  previous 25 days and has not appeared for another team since. Participation probability = his share
-  of the team's games in that window; minutes *if he plays* = his minutes per appearance in it. Whether
-  he appears today never changes his inclusion or his numbers; ``GameSimulator`` then scales the team's
-  fringe participation so expected minutes fill 240 x the expected game length.
+* *fringe candidates*: one pregame rule for everyone (``features.asof.fringe_pool_table``) - every player
+  who appeared for the team in the previous 25 days and has not appeared for another team since.
+  Participation probability = his share of the team's games in that window; minutes *if he plays* = the
+  walk-forward minutes model's projection (every candidate has a pregame feature row, appeared or not).
+  Whether he appears today never changes his inclusion or his numbers; ``GameSimulator`` then scales the
+  team's fringe participation so expected minutes fill 240 x the expected game length.
 * a player who appeared but is in neither group (a new signing, a return from a long absence; he would
   be on the pregame active list) is added at the participation floor (5%) so a conditional forecast
   exists; such players are flagged ``in_pool=False`` and left out of participation calibration.
@@ -28,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import PATHS
+from ..features.asof import FRINGE_P_FLOOR
 from .engine import DEF_FACTORS, MAX_PLAYERS, RATE_KEYS, GameSpec, PlayerSpec, TeamSpec
 
 
@@ -52,6 +54,8 @@ class InputStore:
         self.tp = pd.read_parquet(PATHS.models / "team_predictions.parquet").set_index("game_id")
         ctx = pd.read_parquet(PATHS.features / "team_context.parquet")
         self.ctx = ctx.set_index(["game_id", "team_id"])
+        pool = pd.read_parquet(PATHS.features / "fringe_pool.parquet")
+        self.pool = {k: d for k, d in pool.groupby(["game_id", "team_id"])}
         tg = pd.read_parquet(allp / "team_games.parquet", columns=["game_id", "team_id", "game_date", "tov", "poss"])
         daily = tg.groupby("game_date")[["tov", "poss"]].sum().sort_index()
         roll = daily.rolling(60, min_periods=1).sum().shift(1).bfill()
@@ -89,28 +93,14 @@ def _rates_dict(row: pd.Series) -> dict:
     return {k: float(row[f"r_{k}"]) for k in RATE_KEYS}
 
 
-FRINGE_WINDOW_DAYS = 25
-FRINGE_P_FLOOR, FRINGE_P_CAP = 0.05, 0.9
-
-
-def fringe_pool(store: InputStore, team_id: int, date, exclude: set) -> list:
-    """Pregame fringe candidates: (person_id, participation share, minutes per appearance), largest expected
-    minutes first. Uses only games before ``date``; today's appearance plays no part."""
-    pg = store.pg
-    recent = pg[(pg["team_id"] == team_id) & (pg["game_date"] < date) &
-                (pg["game_date"] >= date - pd.Timedelta(days=FRINGE_WINDOW_DAYS))]
-    n_team_games = max(recent["game_id"].nunique(), 1)
-    out = []
-    for pid, grp in recent[recent["played"]].groupby("person_id"):
-        pid = int(pid)
-        if pid in exclude:
-            continue
-        last = store.last_team_before(pid, date)
-        if last is not None and last != team_id:
-            continue                          # appeared for another team since (traded / waived)
-        share = float(np.clip(len(grp) / n_team_games, FRINGE_P_FLOOR, FRINGE_P_CAP))
-        cond = float(grp["min"].sum() / len(grp))
-        out.append((pid, share, cond))
+def fringe_pool(store, team_id: int, game_id: int, exclude: set) -> list:
+    """Pregame fringe candidates of a team-game: (person_id, participation share, minutes per appearance in the
+    window), largest expected minutes first. Precomputed from games before the date only."""
+    d = store.pool.get((game_id, team_id))
+    if d is None:
+        return []
+    out = [(int(p), float(sh), float(c)) for p, sh, c in zip(d["person_id"], d["share"], d["cond_window"])
+           if int(p) not in exclude]
     return sorted(out, key=lambda x: -x[1] * x[2])
 
 
@@ -145,14 +135,17 @@ def team_spec(store: InputStore, game_id: int, team_id: int, minutes_col: str = 
             seen.add(int(r.person_id))
         else:
             appeared_fringe[int(r.person_id)] = (rr, m)
-    # 2. fringe candidates: one pregame rule (recent players still with the team), same for all
-    pool = fringe_pool(store, team_id, date, exclude | seen | absent_rot)
-    for pid, share, cond in pool:
+    # 2. fringe candidates: one pregame rule (recent players still with the team), same for all; minutes if he
+    #    plays from the minutes model (pregame row for every candidate), else his window average
+    pool = fringe_pool(store, team_id, game_id, exclude | seen | absent_rot)
+    for pid, share, cond_w in pool:
         if len(players) >= max_players:
             break
-        rr = store.latest_rates(pid, date)
+        rr = rates.loc[pid] if rates is not None and pid in rates.index else store.latest_rates(pid, date)
         if rr is None:
             continue
+        cond = float(mins.loc[pid, minutes_col]) if mins is not None and pid in mins.index else cond_w
+        cond = cond if np.isfinite(cond) and cond > 0 else max(cond_w, 1.0)
         players.append(PlayerSpec(pid, store.names.get(pid, str(pid)), _rates_dict(rr),
                                   min_mean=max(share * cond, 0.3), min_sd=3.0, p_play=share, starter=False,
                                   rotation=False))

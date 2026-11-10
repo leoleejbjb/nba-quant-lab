@@ -151,6 +151,8 @@ def cmd_project(a) -> None:
     sc = Scenario(out=[int(x) for x in a.out.split(",")] if a.out else [])
     proj = pr.project(a.game_id, n=a.n_sims, environment=a.environment, scenario=sc)
     res = proj.result
+    if proj.calibration.get("minutes_reprojection"):
+        print(f"[scenario] {proj.calibration['minutes_reprojection']}")
     sc_ = res.score.astype(float)
     mg = sc_[:, 0] - sc_[:, 1]
     print(f"{res.game.away.name} @ {res.game.home.name}: {sc_[:, 1].mean():.1f} - {sc_[:, 0].mean():.1f}, "

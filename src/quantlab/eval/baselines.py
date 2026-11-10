@@ -69,7 +69,9 @@ def load_frame() -> pd.DataFrame:
 
 
 def add_model_inputs(df: pd.DataFrame) -> pd.DataFrame:
-    mp = pd.read_parquet(PATHS.models / "minutes_predictions.parquet")[["game_id", "person_id", "pred_gbm", "rotation"]]
+    mp = pd.read_parquet(PATHS.models / "minutes_predictions.parquet")
+    mp = mp[mp["played"]] if "played" in mp else mp
+    mp = mp[["game_id", "person_id", "pred_gbm", "rotation"]]
     rates = pd.read_parquet(PATHS.models / "player_rates.parquet")
     rcols = [c for c in rates.columns if c.startswith("r_")]
     tf = pd.read_parquet(PATHS.models / "team_factors.parquet")

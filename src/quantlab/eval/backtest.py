@@ -142,6 +142,7 @@ def run_backtest(game_ids: list, n_sims: int = 1500, environment: str = "none", 
                      "sim_total_crps": continuous_scores(total, y_t, rng)["crps"],
                      "sim_margin_pit": float((margin < y_m).mean()), "sim_total_pit": float((total < y_t).mean()),
                      "shift_home": spec.home.eff_shift, "shift_away": spec.away.eff_shift,
+                     "environment": environment, "env_weight": env_weight if environment == "blend" else np.nan,
                      "season": g["season"], "game_date": g["game_date"]})
         prow.extend(rows)
         trow.append(team)
