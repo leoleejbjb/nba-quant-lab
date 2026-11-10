@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/raw/
+data/staged/
+data/processed/
+data/features/
+data/models/
+data/backtest/
+data/sims/
+*.tmp.parquet
+*.tmp.json
+.DS_Store

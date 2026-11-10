@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantlab"
+version = "0.1.0"
+description = "NBA Quant Lab: player box-score forecasting and possession-level game simulation built on reconstructed NBA play-by-play."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "pandas>=2.2,<3",
+  "numpy>=1.26,<2.3",
+  "pyarrow>=15",
+  "duckdb>=1.0",
+  "scipy>=1.11",
+  "scikit-learn>=1.4",
+  "lightgbm>=4.3",
+  "statsmodels>=0.14",
+  "plotly>=5.20",
+  "streamlit>=1.37",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+quantlab = "quantlab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
