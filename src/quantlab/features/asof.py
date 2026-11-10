@@ -119,20 +119,24 @@ ROTATION_BASE_MIN = 8.0    # baseline minutes per team game that make a player "
 ROTATION_EXP_MIN = 12.0    # ... or expected minutes when he plays
 
 
-def team_context(pg: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def team_context(pg: pd.DataFrame, feats: pd.DataFrame, active: dict | None = None,
+                 use_starters: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Teammate-availability context per team-game, using only information public before tip-off.
 
     Baseline = the team's previous 10 games: a player's baseline minutes / plays used are his
     per-team-game averages over those games (0 when he did not play), if he has not appeared for
     another team since. Players are *rotation* players if their baseline minutes >= 8 or their
-    expected minutes when playing >= 12, or they start today. Whether a rotation player plays is
-    treated as known pregame (injury report / inactive list); whether a fringe player plays is not
-    (it depends on blowouts and foul trouble), so fringe players enter every pregame quantity through
-    their baseline minutes, never through today's participation:
+    expected minutes when playing >= 12, or (``use_starters``) they start today.
 
-    * ``avail_exp_min``  sum of today's rotation participants' expected minutes + fringe baseline minutes
-    * ``vacated_min``    baseline minutes of absent *rotation* players (``vacated_used`` for plays used)
-    * ``slack_min``      240 - (baseline minutes of rotation participants + fringe baseline minutes)
+    Who is *available* is the injury report / inactive list. ``active`` maps (game_id, team_id) to the
+    set of players known to be dressed (official box-score statuses: played or DNP-coach's decision);
+    for team-games not in ``active`` the stand-in is who appeared, which also reveals the rotation
+    players a coach chose not to use (game-dependent: see docs/REPORT.md). Fringe players enter every
+    pregame quantity through their baseline minutes, never through today's participation:
+
+    * ``avail_exp_min``  sum of today's available rotation players' expected minutes + fringe baseline minutes
+    * ``vacated_min``    baseline minutes of unavailable *rotation* players (``vacated_used`` for plays used)
+    * ``slack_min``      240 - (baseline minutes of available rotation players + fringe baseline minutes)
     """
     exp_min = (feats["min_sum_m20"] / feats["gp_m20"].replace(0, np.nan)).fillna(feats["season_min_avg"])
     h = 40
@@ -164,28 +168,35 @@ def team_context(pg: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, p
                         base_min[p] = base_min.get(p, 0.0) + m / ng
                         base_used[p] = base_used.get(p, 0.0) + u / ng
             now = by_gt[(gid, team)]
+            act = active.get((gid, team)) if active is not None else None
+            avail = list(now) if act is None else sorted(set(now) | set(act))
+
+            def expected(p):
+                e = now[p][2] if p in now else np.nan
+                return e if e == e else last_exp.get(p, np.nan)
 
             def is_rot(p):
-                e = now[p][2] if p in now else last_exp.get(p, np.nan)
-                st = bool(now[p][3]) if p in now else False
+                e = expected(p)
+                st = use_starters and p in now and bool(now[p][3])
                 return st or base_min.get(p, 0.0) >= ROTATION_BASE_MIN or (e == e and e >= ROTATION_EXP_MIN)
 
-            rot_now = [p for p in now if is_rot(p)]
+            avail_set = set(avail)
+            rot_now = [p for p in avail if is_rot(p)]
             fringe_base = [p for p in base_min if not is_rot(p)]
-            absent_rot = [p for p in base_min if p not in now and is_rot(p)]
+            absent_rot = [p for p in base_min if p not in avail_set and is_rot(p)]
             vac_min = sum(base_min[p] for p in absent_rot)
             vac_used = sum(base_used[p] for p in absent_rot)
             team_used = sum(base_used.values())
             fringe_min = sum(base_min[p] for p in fringe_base)
-            avail_exp = sum((now[p][2] if now[p][2] == now[p][2] else 12.0) for p in rot_now) + fringe_min
+            avail_exp = sum((expected(p) if expected(p) == expected(p) else 12.0) for p in rot_now) + fringe_min
             avail_base = sum(base_min.get(p, 0.0) for p in rot_now) + fringe_min
             ctx_rows.append((gid, team, ng, len(base_min), len(absent_rot),
                              sum(1 for p in absent_rot if base_min[p] >= 15), vac_min, vac_used, team_used,
                              avail_base, (240.0 - avail_base) if ng else np.nan, avail_exp, len(rot_now), fringe_min,
                              "-".join(str(p) for p in sorted(absent_rot, key=lambda p: -base_min[p]))))
-            for p in now:
+            for p in avail:
                 player_rows.append((gid, p, base_min.get(p, 0.0) if ng else np.nan,
-                                    base_used.get(p, 0.0) if ng else np.nan, is_rot(p)))
+                                    base_used.get(p, 0.0) if ng else np.nan, is_rot(p), p in now))
             updates.append((team, {p: (v[0], v[1]) for p, v in now.items()}, now))
         for team, mins, now in updates:      # same-day games never see each other
             recent[team] = (recent.get(team, []) + [mins])[-10:]
@@ -198,8 +209,22 @@ def team_context(pg: pd.DataFrame, feats: pd.DataFrame) -> tuple[pd.DataFrame, p
                                           "avail_base_min", "slack_min", "avail_exp_min", "n_rotation_playing",
                                           "fringe_base_min", "absent"])
     ctx["vacated_used_share"] = ctx["vacated_used"] / ctx["team_used_base"].replace(0, np.nan)
-    pctx = pd.DataFrame(player_rows, columns=["game_id", "person_id", "base_min", "base_used", "rotation"])
-    return ctx, f.merge(pctx, on=["game_id", "person_id"], how="left")
+    pctx = pd.DataFrame(player_rows, columns=["game_id", "person_id", "base_min", "base_used", "rotation",
+                                              "appeared"])
+    if active is None:
+        return ctx, f.merge(pctx.drop(columns=["appeared"]), on=["game_id", "person_id"], how="left")
+    return ctx, pctx
+
+
+# context columns that depend on the rotation rule / the availability information set
+CTX_VARIANT_COLS = ["n_absent", "n_absent_15", "vacated_min", "vacated_used", "avail_base_min", "slack_min",
+                    "avail_exp_min", "n_rotation_playing", "fringe_base_min", "vacated_used_share"]
+
+
+def official_active(av: pd.DataFrame) -> dict:
+    """(game_id, team_id) -> players dressed (played or DNP-coach's decision), official statuses only."""
+    a = av[(av.get("source", "official") == "official") & av["status"].isin(["played", "dnp_cd"])]
+    return {k: set(v) for k, v in a.groupby(["game_id", "team_id"])["person_id"]}
 
 
 def build_features(log=print) -> dict:
@@ -212,8 +237,25 @@ def build_features(log=print) -> dict:
     feats = feats.merge(f[["game_id", "person_id", "exp_min", "exp_usg", "base_min", "base_used", "rotation"]],
                         on=["game_id", "person_id"], how="left")
     feats = feats.merge(ctx.drop(columns=["absent"]), on=["game_id", "team_id"], how="left")
+    # lineup-blind variant (the "no lineup information" minutes model): rotation ignores today's starters
+    ctx_pre, f_pre = team_context(pg, feats, use_starters=False)
+    feats = feats.merge(f_pre[["game_id", "person_id", "rotation"]].rename(columns={"rotation": "rotation_pre"}),
+                        on=["game_id", "person_id"], how="left")
+    feats = feats.merge(ctx_pre[["game_id", "team_id"] + CTX_VARIANT_COLS].rename(
+        columns={c: f"{c}_pre" for c in CTX_VARIANT_COLS}), on=["game_id", "team_id"], how="left")
     PATHS.ensure(PATHS.features)
     feats.to_parquet(PATHS.features / "player_asof.parquet", index=False)
     ctx.to_parquet(PATHS.features / "team_context.parquet", index=False)
+    # exact information set where the official inactive list exists (2020-21 .. 2023-24): dressed players
+    # (played or DNP-coach's decision) are available; used to measure the appearance proxy's leak
+    av = pd.read_parquet(d / "availability.parquet")
+    act = official_active(av)
+    if act:
+        ctx_x, pctx_x = team_context(pg, feats, active=act)
+        keys = pd.DataFrame(list(act.keys()), columns=["game_id", "team_id"])
+        ctx_x = ctx_x.merge(keys, on=["game_id", "team_id"])
+        pctx_x = pctx_x[pctx_x["game_id"].isin(keys["game_id"])]
+        ctx_x.to_parquet(PATHS.features / "team_context_exact.parquet", index=False)
+        pctx_x.to_parquet(PATHS.features / "player_context_exact.parquet", index=False)
     log(f"[features] {len(feats):,} player-game rows, {feats.shape[1]} columns")
     return {"rows": int(len(feats)), "cols": int(feats.shape[1])}

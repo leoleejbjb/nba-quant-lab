@@ -21,8 +21,8 @@ OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs" / "report.html"
 LABEL = {"season_avg": "Season average", "l10": "Last-10 average", "per_min": "Per-minute × projected minutes",
          "opp_adj": "Opponent-adjusted per-minute", "eb": "Empirical-Bayes rates", "gbm": "Gradient boosting",
          "sim_none": "Simulation, bottom-up", "sim_team": "Simulation, team-constrained",
-         "topdown": "Team-first reconciliation"}
-SIM = {"sim_none", "sim_team"}
+         "sim_blend": "Simulation, blend (shipped)", "topdown": "Team-first reconciliation"}
+SIM = {"sim_none", "sim_team", "sim_blend"}
 STATS = ["pts", "reb", "ast", "fg3m", "pra", "stl", "blk", "tov"]
 STAT_LABEL = {"pts": "PTS", "reb": "REB", "ast": "AST", "fg3m": "3PM", "pra": "PRA", "stl": "STL", "blk": "BLK",
               "tov": "TOV"}
@@ -44,7 +44,7 @@ def player_table(rows: list, metric: str, f: str, lower_better=True) -> str:
     best = {}
     for s in STATS:
         vals = [by[m].get(s) for m in models if by[m].get(s) is not None]
-        if vals and metric not in ("bias", "cov80"):
+        if vals and metric not in ("bias", "cov80", "p_pit_below_half"):
             best[s] = min(vals) if lower_better else max(vals)
     out = ['<div class="scroll"><table class="num"><thead><tr><th>Model</th>' +
            "".join(f"<th>{STAT_LABEL[s]}</th>" for s in STATS) + "</tr></thead><tbody>"]
@@ -63,8 +63,8 @@ def player_table(rows: list, metric: str, f: str, lower_better=True) -> str:
 
 
 def pit_svg(pits: dict, stat: str, w=300, h=150) -> str:
-    """Grouped bars: PIT deciles for the EB+NB baseline (gray) and the simulation (blue); line at 10%."""
-    series = [("eb", "EB + neg. binomial", "c-gray"), ("sim_none", "Simulation", "c-s1")]
+    """Grouped bars: PIT deciles for gradient boosting + NB (gray) and the shipped simulation (blue); line at 10%."""
+    series = [("gbm", "Gradient boosting + neg. binomial", "c-gray"), ("sim_blend", "Simulation", "c-s1")]
     data = []
     for key, name, cls in series:
         k = f"{stat}|{key}"
@@ -110,7 +110,7 @@ def reliability_svg(rel: dict, w=420, h=300) -> str:
                  f'<text x="{X(t):.1f}" y="{h - 18}" class="tick" text-anchor="middle">{int(t * 100)}%</text>')
     g.append(f'<line x1="{X(0)}" y1="{Y(0)}" x2="{X(1)}" y2="{Y(1)}" class="ref"/>')
     for s, cls in cols.items():
-        k = f"{s}|sim_none"
+        k = f"{s}|sim_blend|ladder"
         if k not in rel:
             continue
         r = rel[k]
@@ -127,7 +127,8 @@ def reliability_svg(rel: dict, w=420, h=300) -> str:
 
 def team_table(tm: dict) -> str:
     names = {"team_model": "Team model (ratings)", "sim_none": "Simulation, bottom-up",
-             "sim_team": "Simulation, team-constrained", "blend": "Blend (team model + simulation)"}
+             "sim_team": "Simulation, team-constrained", "sim_blend": "Simulation, blend (shipped)",
+             "posthoc_blend": "Post-hoc average of means (reference)"}
     keys = [("margin_mae", "Spread MAE"), ("margin_rmse", "Spread RMSE"), ("total_mae", "Total MAE"),
             ("total_rmse", "Total RMSE"), ("margin_crps", "Spread CRPS"), ("total_crps", "Total CRPS"),
             ("win_logloss", "Win log-loss")]
@@ -136,7 +137,7 @@ def team_table(tm: dict) -> str:
     out = ['<div class="scroll"><table class="num"><thead><tr><th>Forecast</th>' +
            "".join(f"<th>{t}</th>" for _, t in keys) + "</tr></thead><tbody>"]
     for k, v in rows:
-        cls = ' class="sim"' if k in ("sim_none", "sim_team", "blend") else ""
+        cls = ' class="sim"' if k in ("sim_none", "sim_team", "sim_blend") else ""
         cells = "".join(f"<td>{'<b>' if abs(v[m] - best[m]) < 1e-12 else ''}{v[m]:.3f}{'</b>' if abs(v[m] - best[m]) < 1e-12 else ''}</td>" for m, _ in keys)
         out.append(f"<tr{cls}><th scope=\"row\">{names[k]}</th>{cells}</tr>")
     out.append("</tbody></table></div>")
@@ -251,24 +252,28 @@ statistic. Shaded rows are the possession simulator.</p>
     body.append(f"""<section><h2>Player statistics: full distributions</h2>
 <p>CRPS scores the whole predicted distribution (lower is better). Calibration error is the distance of the PIT
 histogram from flat (0 is perfect). Non-simulation models use a negative-binomial distribution around their point
-forecast, with dispersion fitted on the tuning season.</p>
+forecast whose dispersion depends on the predicted mean (fitted on the tuning season).</p>
 <h3>CRPS</h3>{player_table(test_rows, "crps", ".3f")}
 <h3>Calibration error (PIT, L1 from uniform)</h3>{player_table(test_rows, "pit_dev", ".3f")}
+<h3>80% interval coverage (central 80% of the forecast, ties randomized; 0.800 = calibrated)</h3>{player_table(test_rows, "cov80", ".3f", lower_better=False)}
+<h3>Share of outcomes below the forecast median (0.500 = calibrated; higher = forecast too high)</h3>{player_table(test_rows, "p_pit_below_half", ".3f", lower_better=False)}
 <div class="grid4">""" + "".join(
         f'<figure>{pit_svg(s["pit_test"], st)}<figcaption>{STAT_LABEL[st]}: PIT deciles, flat line = calibrated</figcaption></figure>'
         for st in ("pts", "reb", "ast", "pra")) + """</div>
-<div class="legend"><span class="key"><i class="c-gray"></i>EB rates + negative binomial</span><span class="key"><i class="c-s1"></i>Possession simulation</span></div>
+<div class="legend"><span class="key"><i class="c-gray"></i>Gradient boosting + negative binomial</span><span class="key"><i class="c-s1"></i>Possession simulation (shipped blend)</span></div>
 </section>""")
     rel = s.get("reliability_test", {})
     body.append(f"""<section><h2>Over/under reliability</h2>
-<div class="grid2"><figure>{reliability_svg(rel)}<figcaption>Simulated P(over) at the half-point line nearest each
-projection, binned by decile, against how often the over hit.</figcaption></figure>
+<div class="grid2"><figure>{reliability_svg(rel)}<figcaption>Simulated P(over) at five lines per player-game (the
+half-point line nearest the projection and 1-2 points either side), binned by decile, against how often the over
+hit.</figcaption></figure>
 <div class="callout"><h3>Reading it</h3><p>Points on the diagonal mean a stated 60% over happens 60% of the time.
+Mean gap, predicted minus observed (percentage points): {", ".join(f"{STAT_LABEL[k]} {100 * rel[f'{k}|sim_blend|ladder']['mean_gap']:+.1f}" for k in STATS if f"{k}|sim_blend|ladder" in rel)}.
 Every probability comes from the joint simulated games, so a two-leg parlay is the share of games in which both legs
 hit, never a product of marginals.</p></div></div></section>""")
     mrows = [("season_avg", "Season average"), ("l10", "Last-10 average"), ("ewma", "Decayed average"),
              ("gbm_pre", "LightGBM, no lineup info"), ("gbm", "LightGBM, starting lineups known"),
-             ("sim_none", "Simulation, bottom-up")]
+             ("sim_none", "Simulation, bottom-up"), ("sim_blend", "Simulation, blend (shipped)")]
     mt = ['<div class="scroll"><table class="num"><thead><tr><th>Minutes model</th><th>MAE</th><th>RMSE</th><th>Bias</th>'
           '</tr></thead><tbody>']
     for k, name in mrows:
@@ -278,10 +283,19 @@ hit, never a product of marginals.</p></div></div></section>""")
             mt.append(f"<tr{cls}><th scope=\"row\">{name}</th><td>{r['mae']:.3f}</td><td>{r['rmse']:.3f}</td>"
                       f"<td>{r['bias']:+.3f}</td></tr>")
     mt.append("</tbody></table></div>")
+    ax = s.get("availability_experiment", {})
+    axp = (f"""<p class="note">Who is available is taken from who appeared (the sources have no inactive list for the
+test seasons), which also reveals rotation players a coach chose not to use. On {ax['season']}, where the official
+statuses exist, the lineups-known model's MAE is {ax['mae_appearance_proxy']:.3f} with that stand-in and
+{ax['mae_inactive_list']:.3f} with the real inactive list: the test numbers carry about {ax['mae_leak']:.2f} minutes
+of optimism.</p>""" if ax else "")
     body.append(f"""<section><h2>Minutes</h2><p>Projected minutes for every player who appeared. The simulator enforces
-240 player-minutes per team (plus overtime) with five on the floor at all times.</p>{''.join(mt)}</section>""")
+240 player-minutes per team (plus overtime) with five on the floor at all times.</p>{''.join(mt)}{axp}</section>""")
     body.append(f"""<section><h2>Team forecasts: does the player layer help?</h2>
-<p>Spread and total accuracy on {n_games:,} test games. The blend weight on the team model was chosen on 2023-24.</p>
+<p>Spread and total accuracy on {n_games:,} test games. The shipped forecast is the simulator's blend environment
+(team-model weight {tm['blend_weight']:.2f}, chosen on 2023-24), backtested as such; the post-hoc average of means is
+shown for reference only. Overtime: {t_test['actual_ot_rate']:.1%} of test games, simulated
+{t_test.get('sim_blend', {}).get('p_ot', float('nan')):.1%}.</p>
 {team_table(t_test)}
 <p class="note">Paired bootstrap over games, reduction in squared error versus the team model (positive is better):
 {"; ".join(f"{k.replace('_', ' ')} {v['mean']:+.2f} (95% CI {v['ci95'][0]:+.2f} to {v['ci95'][1]:+.2f})" for k, v in bs.items())}.</p>
@@ -290,17 +304,20 @@ hit, never a product of marginals.</p></div></div></section>""")
         rows = "".join(f"<tr><th scope=\"row\">{STAT_LABEL.get(k, k)}</th><td>{v['with_opponent']['mae']:.4f}</td>"
                        f"<td>{v['without_opponent']['mae']:.4f}</td><td>{v['mae_gain']:+.4f}</td>"
                        f"<td>{v['mae_gain_ci95'][0]:+.4f} to {v['mae_gain_ci95'][1]:+.4f}</td></tr>" for k, v in abl.items())
-        body.append(f"""<section><h2>Matchups</h2><p>Gradient boosting retrained without any opponent feature. Gains are
-the reduction in MAE from adding them back, with game-clustered bootstrap intervals.</p>
+        body.append(f"""<section><h2>Matchups</h2><p>Gradient boosting retrained without any opponent information
+(opponent style factors, the opponent factors inside the closed-form expectation, and the team-model environment,
+replaced by the team's own season-to-date averages). Gains are the reduction in MAE from adding it back, with
+game-clustered bootstrap intervals.</p>
 <div class="scroll"><table class="num"><thead><tr><th>Stat</th><th>With opponent</th><th>Without</th><th>Gain</th>
 <th>95% CI</th></tr></thead><tbody>{rows}</tbody></table></div></section>""")
     if part.get("calibration"):
         c = part["calibration"]
         rows = "".join(f"<tr><th scope=\"row\">{p:.2f}</th><td>{o:.2f}</td><td>{n:,}</td></tr>"
                        for p, o, n in zip(c["pred"], c["obs"], c["n"]))
-        body.append(f"""<section><h2>Uncertain participation</h2><p>Rotation players are treated as known before tip-off
-(injury report). Deep-bench appearances are not: they depend on blowouts. Pregame participation probabilities for those
-players against who actually appeared ({part['season']}, {part['games']} games):</p>
+        body.append(f"""<section><h2>Uncertain participation</h2><p>Rotation players' availability comes from the
+injury-report stand-in. Deep-bench appearances are uncertain: they depend on blowouts. Simulated participation
+probabilities of the fringe candidates listed by the pregame rule against who actually appeared ({part['season']},
+{part['games']} games):</p>
 <div class="scroll"><table class="num"><thead><tr><th>Predicted P(play)</th><th>Observed</th><th>Players</th></tr></thead>
 <tbody>{rows}</tbody></table></div></section>""")
     body.append(f"""<footer>Data: NBA liveData play-by-play 2020-21 to 2025-26 and NBA.com box scores through 2023-24 (pinned

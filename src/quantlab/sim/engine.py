@@ -47,7 +47,7 @@ RATE_KEYS = ["usage", "tov_share", "fga3_share", "trip_share", "fg2", "fg3", "ft
 R = {k: i for i, k in enumerate(RATE_KEYS)}
 DEF_FACTORS = ["tov_forced", "fga3_share_allowed", "fg2_allowed", "fg3_allowed", "trips_allowed",
                "oreb_allowed", "ast_allowed"]
-MAX_PLAYERS = 15
+MAX_PLAYERS = 17
 
 
 @dataclass
@@ -62,6 +62,8 @@ class PlayerSpec:
     rotation: bool = True          # rotation player (planned minutes) vs fringe (mostly garbage time)
     usage_mult: float = 1.0        # scenario knob: scales usage weight
     minutes_cap: float = 48.0      # e.g. injury minutes restriction
+    in_pool: bool = True           # fringe: listed by the pregame rule (False: added only because he appeared)
+    locked: bool = False           # minutes / participation set by a scenario: never rescaled by the budget
 
 
 @dataclass
@@ -105,14 +107,21 @@ class SimParams:
     garbage_core: int = 7           # players subject to garbage-time benching (by planned minutes)
     score_effect: float = 0.034     # logit drift against the leading team per 10 points of lead
     own_effect: float = 0.034       # logit drift against a team scoring above its expected pace (per 10 pts)
-    trip_mult: float = 0.93         # nuisance calibrations (tuning season only)
-    stl_mult: float = 1.06
-    blk_mult: float = 1.06
+    tov_mult: float = 1.0           # nuisance calibrations: team-level event rates matched to the 2023-24
+    trip_mult: float = 0.895        # tuning season (makes, attempts, FTA, steals, blocks, possessions, OREB%)
+    stl_mult: float = 1.025
+    blk_mult: float = 1.03
+    oreb_mult: float = 0.975
     fg2_offset: float = -0.035
-    fg3_offset: float = -0.01
-    duration_scale: float = 1.012
+    fg3_offset: float = 0.05
+    duration_scale: float = 1.0155
     nsf_scale: float = 0.88
     min_sd_scale: float = 1.35      # scales every player's planned-minutes noise
+    hold_u: float = 1.5             # a last-shot hold leaves U(0, hold_u) seconds on the clock
+    heave_window: float = 4.0       # possessions starting with less than this left get one hurried shot
+    foul_avoid4: float = 0.55       # foul propensity multiplier at 4 fouls / at 5 fouls (players avoid fouling out;
+                                    # calibrated on 2023-24 foul-out and 5-foul rates)
+    foul_avoid5: float = 0.45
 
 
 def load_constants() -> dict:
@@ -131,6 +140,8 @@ class SimResult:
     lineup_secs: np.ndarray    # (2, 2**P) total seconds per five-man unit (bitmask), summed over sims
     players: list              # [[PlayerSpec ...], [PlayerSpec ...]]
     game: GameSpec
+    marks: np.ndarray | None = None   # (N, 5) see core._game: margins at 60 s left / end of regulation, last-24 s
+                                      # offense lead and side, no-eligible-substitute flag
 
     @property
     def n(self) -> int:
@@ -173,11 +184,32 @@ class SimResult:
             "plus_minus_sums": bool((st[..., S["pm"]].sum(axis=2) ==
                                      5 * (self.score - self.score[:, ::-1])).all()),
             "no_ties": bool((self.score[:, 0] != self.score[:, 1]).all()),
-            # a player can only exceed six fouls if fouls are committed on the same possession as the sixth
-            "fouls_le_7": bool((st[..., S["pf"]] <= 7).all()),
+            "rebounds_reconcile_with_misses": self._rebounds_ok(st),
+            # disqualification at six fouls; a disqualified player stays in only when his team has no eligible
+            # substitute left (NBA rule), the one case where more than six fouls are possible
+            "fouls_le_6": bool((st[..., S["pf"]] <= 6).all(axis=(1, 2))[self._no_emergency()].all()),
         }
         out["all"] = all(out.values())
         return out
+
+    def _no_emergency(self) -> np.ndarray:
+        if self.marks is None or self.marks.shape[1] < 5:
+            return np.ones(len(self.score), dtype=bool)
+        return self.marks[:, 4] == 0
+
+    def _rebounds_ok(self, st: np.ndarray) -> bool:
+        """Every missed field goal is rebounded (a player or team rebound) and nothing else is, except missed
+        final free throws: per team, missed FG <= own OREB + opponent DREB <= missed FG + missed FT."""
+        tr = self.team_reb.astype(np.int64)
+        ok = True
+        for t in (0, 1):
+            miss_fg = (st[:, t, :, S["fga2"]] + st[:, t, :, S["fga3"]] - st[:, t, :, S["fgm2"]]
+                       - st[:, t, :, S["fgm3"]]).sum(axis=1)
+            miss_ft = (st[:, t, :, S["fta"]] - st[:, t, :, S["ftm"]]).sum(axis=1)
+            reb = st[:, t, :, S["oreb"]].sum(axis=1) + tr[:, t, 0] + st[:, 1 - t, :, S["dreb"]].sum(axis=1) \
+                + tr[:, 1 - t, 1]
+            ok = ok and bool(((reb >= miss_fg) & (reb <= miss_fg + miss_ft)).all())
+        return ok
 
 
 class GameSimulator:
@@ -204,6 +236,7 @@ class GameSimulator:
         self.rotation = np.zeros((2, P), dtype=np.bool_)
         self.usage_mult = np.ones((2, P))
         self.cap = np.full((2, P), 48.0)
+        self.locked = np.zeros((2, P), dtype=np.bool_)
         for t, team in enumerate(self.teams):
             for i, pl in enumerate(team.players):
                 self.exists[t, i] = True
@@ -215,6 +248,7 @@ class GameSimulator:
                 self.rotation[t, i] = pl.rotation
                 self.usage_mult[t, i] = pl.usage_mult
                 self.cap[t, i] = pl.minutes_cap
+                self.locked[t, i] = pl.locked
             avail = self.exists[t] & (self.p_play[t] > 0)
             if (self.starter[t] & avail).sum() != 5:
                 key = self.min_mean[t] + 100 * (self.starter[t] & avail) - 1e6 * ~avail
@@ -233,7 +267,7 @@ class GameSimulator:
         self._minutes_budget()
         # planned minutes: rotation players their projection; fringe players their conditional minutes
         self.plan = np.where(self.rotation, self.min_mean,
-                             np.where(self.p_play > 0, self.min_mean / np.maximum(self.p_play, 0.05), 0.0))
+                             np.where(self.p_play > 0, self.min_mean / np.maximum(self.p_play, 1e-6), 0.0))
         self.plan = np.where(self.exists, np.minimum(self.plan, self.cap), 0.0)
         self._templates()
 
@@ -241,25 +275,33 @@ class GameSimulator:
         """Honour the minutes model for rotation players; fringe players fill the remainder by
         *appearing more often*, not by playing longer when they appear.
 
-        The minutes model is unbiased for rotation players, so their projections are kept. The residual
-        ``total - sum(rotation)`` goes to fringe players: each keeps his conditional minutes (his typical
-        minutes when he plays) and his participation probability is scaled (capped at ``p_max``) until the
-        expected fringe minutes match the residual; whatever fringe players cannot absorb is spread over the
-        rotation. (Diagnosed on 2023-24: without this the simulator over-allocated rotation minutes by
-        ~2.5 per team-game; inflating fringe *conditional* minutes instead biased them by +4.9.)
+        The minutes model is unbiased for rotation players, so their projections are kept. Projections are
+        minutes *if he plays*; the budget is drawn up for the case where every available rotation player
+        plays, and when a questionable one (p_play < 1) sits, the kernel's per-game normalisation gives his
+        minutes to the players who do play. The residual ``total - sum(rotation)`` goes to fringe players:
+        each keeps his conditional minutes (his typical minutes when he plays) and his participation
+        probability is scaled (capped at ``p_max``) until the expected fringe minutes match the residual - so
+        a deeper projected rotation always means less fringe participation, down to none; whatever fringe
+        players cannot absorb is spread over the rotation. Players whose minutes or participation were set by
+        a scenario (``locked``) keep them: their minutes come off the budget first and they are never rescaled.
+        (Diagnosed on 2023-24: without this the simulator over-allocated rotation minutes by ~2.5 per
+        team-game; inflating fringe *conditional* minutes instead biased them by +4.9.)
         """
         for t in range(2):
-            rot = self.exists[t] & self.rotation[t]
-            fr = self.exists[t] & ~self.rotation[t] & (self.p_play[t] > 0)
-            rot_sum = float((self.min_mean[t] * self.p_play[t])[rot].sum())
-            if rot_sum > total and rot_sum > 0:
-                self.min_mean[t, rot] *= total / rot_sum
-                rot_sum = total
-            budget = total - rot_sum
-            if fr.any() and budget > 0:
-                cond = self.min_mean[t, fr] / np.maximum(self.p_play[t, fr], 0.05)   # minutes when he plays
+            ex = self.exists[t] & (self.p_play[t] > 0)
+            lk = ex & self.locked[t]
+            rot = ex & self.rotation[t] & ~lk
+            fr = ex & ~self.rotation[t] & ~lk
+            avail = max(total - float(self.min_mean[t, lk].sum()), 0.0)
+            rot_sum = float(self.min_mean[t, rot].sum())
+            if rot_sum > avail and rot_sum > 0:
+                self.min_mean[t, rot] *= avail / rot_sum
+                rot_sum = avail
+            budget = avail - rot_sum
+            if fr.any():
+                cond = self.min_mean[t, fr] / np.maximum(self.p_play[t, fr], 1e-6)   # minutes when he plays
                 cur = float((self.p_play[t, fr] * cond).sum())
-                k = budget / max(cur, 1e-6)
+                k = max(budget, 0.0) / max(cur, 1e-6)
                 newp = np.minimum(self.p_play[t, fr] * k, p_max)
                 self.p_play[t, fr] = newp
                 self.min_mean[t, fr] = newp * cond
@@ -331,6 +373,20 @@ class GameSimulator:
         prm[core.P_PPP_REF_H] = self.teams[0].target_ppp or 1.15
         prm[core.P_PPP_REF_A] = self.teams[1].target_ppp or 1.15
         prm[core.P_FRINGE_SD] = p.fringe_sd
+        eg = c["end_game"]
+        prm[core.P_HOLD_TIED] = eg["hold"]["tied"]
+        prm[core.P_HOLD_DOWN] = eg["hold"]["down_1_3"]
+        prm[core.P_HOLD_U] = p.hold_u
+        prm[core.P_QUICK_DUR] = eg["quick_dur"]
+        prm[core.P_HEAVE2] = eg["fg"]["heave2"]
+        prm[core.P_HEAVE3] = eg["fg"]["heave3"]
+        lg3 = 0.36
+        prm[core.P_LATE3_OFF] = float(np.log(eg["fg"]["late3"] / (1 - eg["fg"]["late3"])) - np.log(lg3 / (1 - lg3)))
+        prm[core.P_HEAVE_T] = p.heave_window
+        prm[core.P_AVOID4] = p.foul_avoid4
+        prm[core.P_AVOID5] = p.foul_avoid5
+        prm[core.P_TOV_MULT] = p.tov_mult
+        prm[core.P_OREB_MULT] = p.oreb_mult
         return prm
 
     def _arrays(self):
@@ -338,17 +394,27 @@ class GameSimulator:
         garbage = np.array([c["garbage_ratio"][str(k)] if str(k) in c["garbage_ratio"] else c["garbage_ratio"][k]
                             for k in range(36, 48)], dtype=np.float64)
         mb_edges = np.asarray(c["margin_buckets"], dtype=np.float64)
-        late = c["late_game"]["leading"]
+        lw = c["late_game"]["leading_by_window"]
         base = c["late_game"]["baseline_p_trip_q4"]
-        p_int = np.array([max(0.0, (late[k]["p_trip"] - base) / (1 - base)) for k in ("1-3", "4-6", "7-9", "10-99")])
-        return garbage, mb_edges, p_int
+        p_int = np.array([[max(0.0, (lw[w][k]["p_trip"] - base) / (1 - base)) for k in ("1-3", "4-6", "7-9", "10-99")]
+                          for w in ("24-60", "0-24")])
+        eg = c["end_game"]
+        late_dur = np.array([eg["dur"]["60-120"], eg["dur"]["24-60"]], dtype=np.float64)
+        late3 = np.array([eg["three_share"]["4-24"], eg["three_share"]["0-4"]], dtype=np.float64)
+        heave_fg = np.array(eg["heave_fg"], dtype=np.float64) if "heave_fg" in eg else \
+            np.tile([eg["fg"]["heave2"], eg["fg"]["heave3"]], (6, 1))
+        late_off = np.asarray(eg.get("late_make_logit", np.zeros((3, 4, 2))), dtype=np.float64)
+        return garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off
 
-    def _run_raw(self, n, seed, shift, plan, track):
-        garbage, mb_edges, p_int = self._arrays()
-        n_chunks = int(min(max(4, n // 64), 256))
-        return core.simulate(int(n), n_chunks, int(seed), self.rates, self.exists, self.p_play, plan, self.min_sd,
+    def _run_raw(self, n, seed, shift, plan, track, p_play=None):
+        garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off = self._arrays()
+        # lineup histograms hold 2**P cells per chunk: fewer chunks when tracking a large roster
+        n_chunks = int(min(max(4, n // 64), 32 if (track and self.P > 15) else 256))
+        return core.simulate(int(n), n_chunks, int(seed), self.rates, self.exists,
+                             self.p_play if p_play is None else p_play, plan, self.min_sd,
                              self.starter, self.rotation, self.usage_mult, self.cap, self.q, self.cumfrac, self.dfac,
-                             garbage, mb_edges, p_int, self._prm(shift), self.P, track)
+                             garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off, self._prm(shift), self.P,
+                             track)
 
     def calibrate(self, n_pilot: int = 800, iters: int = 3, seed: int = 99, minutes: bool = True,
                   environment: str = "none", env_weight: float = 1.0) -> dict:
@@ -359,10 +425,14 @@ class GameSimulator:
         """
         shift = np.array([self.teams[0].eff_shift, self.teams[1].eff_shift], dtype=float)
         plan = self.plan.copy()
-        want = np.where(self.rotation, self.min_mean, self.min_mean)      # expected minutes per team game
+        # targets: rotation players their minutes if they play, fringe players their expected minutes per team
+        # game. Pilot runs let every available rotation player play, so a questionable player's target and his
+        # simulated mean are on the same basis (otherwise games he sits out would inflate his plan).
+        want = self.min_mean.copy()
+        p_pilot = np.where(self.rotation & (self.p_play > 0), 1.0, self.p_play)
         info = {}
         for it in range(iters if minutes else 0):
-            st, secs, score, *_ = self._run_raw(n_pilot, seed + it, shift, plan, False)
+            st, secs, score, *_ = self._run_raw(n_pilot, seed + it, shift, plan, False, p_play=p_pilot)
             sim_mean = secs.mean(axis=0) / 60.0
             ok = self.exists & (want > 0.3) & (sim_mean > 0.05)
             ratio = np.where(ok, want / np.maximum(sim_mean, 1e-3), 1.0)
@@ -386,10 +456,10 @@ class GameSimulator:
 
     def run(self, n: int = 10000, seed: int = 0, track_lineups: bool = True) -> SimResult:
         shift = (self.teams[0].eff_shift, self.teams[1].eff_shift)
-        stats, secs, score, team_reb, team_tov, poss, periods, hist = self._run_raw(n, seed, shift, self.plan,
-                                                                                   track_lineups)
+        stats, secs, score, team_reb, team_tov, poss, periods, hist, marks = self._run_raw(n, seed, shift, self.plan,
+                                                                                          track_lineups)
         return SimResult(stats, secs, score, np.maximum(periods.astype(int) - 4, 0), team_reb, team_tov, poss,
-                         hist.sum(axis=0), [t.players for t in self.teams], self.g)
+                         hist.sum(axis=0), [t.players for t in self.teams], self.g, marks)
 
 
 def ipf(base: np.ndarray, row_targets: np.ndarray, col_target: float, iters: int = 80) -> np.ndarray:

@@ -3,7 +3,8 @@
 Pipeline (each stage reads the previous stage's files; ``quantlab pipeline`` runs all of them):
 
     fetch -> build -> database -> features -> team -> minutes -> rates -> opponent -> constants
-          -> backtest -> baselines -> topdown -> report
+          -> backtest (2023-24 none, team) -> blendweight -> backtest (blend; 2024-26 all modes)
+          -> baselines -> ablation -> topdown -> report
 
 Use ``quantlab project --game-id 22501201`` to print a projected box score, or
 ``quantlab dashboard`` for the interactive dashboard.
@@ -56,9 +57,10 @@ def cmd_team(a) -> None:
 
 def cmd_minutes(a) -> None:
     import pandas as pd
-    from .models.minutes import run_minutes, save_season_models
+    from .models.minutes import exact_availability_experiment, run_minutes, save_season_models
     ev = run_minutes()
     save_season_models()
+    exact_availability_experiment(TUNING_SEASON)
     with pd.option_context("display.width", 200):
         print(ev[ev["season"] == "all"].sort_values("mae").round(3).to_string(index=False))
 
@@ -80,16 +82,25 @@ def cmd_constants(a) -> None:
 
 def cmd_backtest(a) -> None:
     from .eval.backtest import run_backtest
+    from .live import default_blend_weight
     from .sim.inputs import InputStore
     store = InputStore()
+    w = a.blend_weight if getattr(a, "blend_weight", None) is not None else default_blend_weight()
     for season in _seasons(a.season):
         ids = store.games[store.games["season"] == season].sort_values("game_date").index.tolist()
         if a.limit:
             ids = ids[: a.limit]
         for mode in a.modes.split(","):
             t0 = time.time()
-            run_backtest(ids, n_sims=a.n_sims, environment=mode, store=store, tag=f"sim_{mode}_{season}")
-            print(f"[backtest] {season} {mode}: {len(ids)} games in {time.time() - t0:.0f}s")
+            run_backtest(ids, n_sims=a.n_sims, environment=mode, env_weight=w, store=store, tag=f"sim_{mode}_{season}")
+            print(f"[backtest] {season} {mode}{f' (w={w:.2f})' if mode == 'blend' else ''}: {len(ids)} games in "
+                  f"{time.time() - t0:.0f}s")
+
+
+def cmd_blendweight(a) -> None:
+    """Choose the team-model weight of the simulator's blend environment on the tuning season."""
+    from .eval.report import choose_blend_weight
+    choose_blend_weight()
 
 
 def cmd_baselines(a) -> None:
@@ -107,6 +118,15 @@ def cmd_baselines(a) -> None:
     PATHS.ensure(PATHS.backtest)
     keep.to_parquet(PATHS.backtest / "baseline_predictions.parquet", index=False)
     print(f"[baselines] {len(keep):,} player-games")
+
+
+def cmd_ablation(a) -> None:
+    """Opponent / matchup ablation of the gradient-boosting player models (test seasons)."""
+    import json
+    from .eval.baselines import opponent_ablation
+    out = opponent_ablation()
+    PATHS.ensure(PATHS.backtest)
+    (PATHS.backtest / "opponent_ablation.json").write_text(json.dumps(out, indent=1))
 
 
 def cmd_topdown(a) -> None:
@@ -159,9 +179,17 @@ def cmd_pipeline(a) -> None:
     for fn in (cmd_fetch, cmd_build, cmd_database, cmd_features, cmd_team, cmd_minutes, cmd_rates, cmd_opponent,
                cmd_constants):
         fn(a)
-    a.modes = "none,team"
-    a.season = ",".join([TUNING_SEASON, *TEST_SEASONS])
-    for fn in (cmd_backtest, cmd_baselines, cmd_topdown, cmd_report):
+    # bottom-up and team-constrained backtests; the blend weight is chosen on the tuning season from them,
+    # then the shipped blend environment is backtested with that weight
+    a.blend_weight = None
+    a.modes, a.season = "none,team", TUNING_SEASON
+    cmd_backtest(a)
+    cmd_blendweight(a)
+    a.modes, a.season = "blend", TUNING_SEASON
+    cmd_backtest(a)
+    a.modes, a.season = "none,team,blend", ",".join(TEST_SEASONS)
+    cmd_backtest(a)
+    for fn in (cmd_baselines, cmd_ablation, cmd_topdown, cmd_report):
         fn(a)
 
 
@@ -177,7 +205,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     simple = {"database": cmd_database, "features": cmd_features, "team": cmd_team, "minutes": cmd_minutes,
               "rates": cmd_rates, "opponent": cmd_opponent, "constants": cmd_constants, "baselines": cmd_baselines,
-              "topdown": cmd_topdown, "report": cmd_report}
+              "topdown": cmd_topdown, "report": cmd_report, "blendweight": cmd_blendweight,
+              "ablation": cmd_ablation}
     f = sub.add_parser("fetch", help="download + verify pinned raw files")
     f.add_argument("--season", default="all")
     f.set_defaults(fn=cmd_fetch)
@@ -192,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--modes", default="none,team")
     bt.add_argument("--n-sims", type=int, default=1200)
     bt.add_argument("--limit", type=int, default=0)
+    bt.add_argument("--blend-weight", type=float, default=None,
+                    help="team-model weight for --modes blend (default: data/models/integration.json)")
     bt.set_defaults(fn=cmd_backtest)
     pj = sub.add_parser("project", help="projected box score for one game (pregame information only)")
     pj.add_argument("--game-id", type=int, required=True)

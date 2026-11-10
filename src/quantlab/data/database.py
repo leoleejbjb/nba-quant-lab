@@ -6,9 +6,13 @@ Tables written to ``data/processed/all/`` (also exposed as DuckDB views by
 * ``player_games``  every player-game 2020-21..2025-26 (box score + on-court exposures).
   ``min`` is the official NBA.com minutes when available (2020-21..2023-24),
   otherwise the play-by-play reconstruction (``min_rec``, within 1 s of the
-  official value for 99.9% of 2023-24 player-games).
-* ``availability``  per team-game roster status for seasons with official box scores:
-  ``played``, ``dnp_cd`` (dressed, coach's decision) or ``out`` (DND / NWT / injury).
+  official value for 99.9% of 2023-24 player-games). Coaches and staff (people
+  who never played, charged with bench technicals) are not player-games.
+* ``availability``  per team-game roster status. 2020-21..2023-24, from the official box-score
+  comments: ``played``, ``dnp_cd`` (dressed but unused: "DNP - Coach's Decision" or listed at 0:00)
+  or ``out`` (every DND / NWT / DNP-injury / rest / suspension comment). 2024-25 and 2025-26 have no
+  official box scores, so only ``played`` rows (from play-by-play) exist there: who was dressed but
+  unused, and who was out, is unknown for those seasons (``source`` = ``pbp``).
 * ``team_games``    team box score with the opponent's columns joined (``opp_*``), rest days.
 * ``games``         one row per game.
 * ``players``       one row per player: name, career totals, last team.
@@ -23,10 +27,10 @@ from ..config import ALL_SEASONS, PATHS
 from .build import _write
 
 def availability_status(comment: pd.Series, box_seconds: pd.Series) -> pd.Series:
-    c = comment.fillna("")
+    """played / dnp_cd (dressed, unused) / out. 'DND - Coach's Decision' (did not dress) is out."""
+    c = comment.fillna("").str.strip()
     out = np.where(box_seconds.fillna(0) > 0, "played",
-                   np.where(c.str.startswith("DNP - Coach") | c.str.startswith("DND - Coach"), "dnp_cd",
-                            np.where(c == "", "dnp_cd", "out")))
+                   np.where(c.str.startswith("DNP - Coach") | (c == ""), "dnp_cd", "out"))
     return pd.Series(out, index=comment.index)
 
 
@@ -61,6 +65,11 @@ def build_database(seasons=ALL_SEASONS, log=print) -> dict:
     pg["min"] = np.where(has_box, pg["box_seconds"].fillna(0) / 60.0, pg["min_rec"])
     pg["min_source"] = np.where(has_box, "official", "pbp")
     pg["played"] = pg["min"] > 0
+    # coaches / staff: a bench technical gives them an event but they never play
+    ever = set(pg.loc[pg["played"], "person_id"])
+    staff = ~pg["person_id"].isin(ever) & ~pg["played"]
+    n_staff = int(staff.sum())
+    pg = pg[~staff].reset_index(drop=True)
     pg["game_date"] = pd.to_datetime(pg["game_date"])
 
     # ---- names ----
@@ -90,13 +99,15 @@ def build_database(seasons=ALL_SEASONS, log=print) -> dict:
     tg["total"] = tg["pts"] + tg["opp_pts"]
     tg["win"] = tg["margin"] > 0
 
-    # ---- availability: add 'played' rows for seasons without official box scores ----
+    # ---- availability: official statuses; 'played' rows only for seasons without official box scores ----
     if len(av):
         av = av.merge(games[["game_id", "game_date"]], on="game_id", how="left")
-    no_box = pg[pg["min_source"] == "pbp"]
+        av["source"] = "official"
+    box_seasons = set(av["season"]) if len(av) else set()
+    no_box = pg[~pg["season"].isin(box_seasons) & pg["played"]]
     av_pbp = no_box[["game_id", "season", "team_id", "person_id", "name"]].rename(columns={"name": "player_name"})
-    av_pbp = av_pbp.assign(status=np.where(no_box["played"], "played", "dnp_cd"), comment="", position=None,
-                           box_seconds=no_box["sec"]).merge(games[["game_id", "game_date"]], on="game_id")
+    av_pbp = av_pbp.assign(status="played", comment="", position=None, box_seconds=no_box["sec"],
+                           source="pbp").merge(games[["game_id", "game_date"]], on="game_id")
     av = pd.concat([av, av_pbp], ignore_index=True)
 
     players = pg[pg["played"]].groupby("person_id").agg(
@@ -111,7 +122,7 @@ def build_database(seasons=ALL_SEASONS, log=print) -> dict:
         _write(df, out_dir / f"{name}.parquet")
     summary = {"player_games": int(len(pg)), "played": int(pg["played"].sum()), "games": int(len(games)),
                "players": int(len(players)), "seasons": list(seasons),
-               "availability_rows": int(len(av)),
+               "availability_rows": int(len(av)), "staff_rows_dropped": n_staff,
                "status_counts": {k: int(v) for k, v in av["status"].value_counts().items()}}
     log(f"[database] {summary}")
     return summary

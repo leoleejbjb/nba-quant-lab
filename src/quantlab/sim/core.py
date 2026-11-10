@@ -25,8 +25,10 @@ F_TOV, F_3SH, F_FG2, F_FG3, F_TRIP, F_OREB, F_AST = range(7)
  P_INJ, P_BASE_MEAN, P_SHAPE, P_B_OREB, P_TECH, P_TEAM_TOV, P_NSF, P_TEAM_REB, P_TEAM_OREB_FRAC, P_LG_TOV,
  P_LG_BLK, P_LG_AST, P_SHIFT_H, P_SHIFT_A, P_CORE, P_FOUL1, P_FOUL2, P_FOUL3, P_FOUL4, P_LG_FG2, P_LG_FG3,
  P_FRINGE_PEN, P_SCORE_EFF, P_TRIP_MULT, P_STL_MULT, P_BLK_MULT, P_FG2_OFF, P_FG3_OFF, P_OWN_EFF, P_RE_RHO,
- P_PPP_REF_H, P_PPP_REF_A, P_FRINGE_SD) = range(44)
-N_PARAMS = 44
+ P_PPP_REF_H, P_PPP_REF_A, P_FRINGE_SD, P_HOLD_TIED, P_HOLD_DOWN, P_HOLD_U, P_QUICK_DUR, P_HEAVE2, P_HEAVE3,
+ P_LATE3_OFF, P_HEAVE_T, P_AVOID4, P_AVOID5, P_TOV_MULT, P_OREB_MULT) = range(56)
+N_PARAMS = 56
+# end-of-game lead groups (offense perspective): 0 leading, 1 tied, 2 down 1-3, 3 down 4+
 
 
 @njit(cache=True, inline="always")
@@ -57,6 +59,21 @@ def _choice(w, n):
 
 
 @njit(cache=True)
+def _foul_weights(rates, lineup, d, fouls, prm, w5b):
+    """Defender charged with a foul: foul propensity, lower for players already in foul trouble."""
+    for k in range(5):
+        pl = lineup[d, k]
+        w = rates[d, pl, PF_R]
+        if fouls[d, pl] >= 6:
+            w *= 1e-9        # disqualified mid-possession: leaves at the next stoppage, fouls no more
+        elif fouls[d, pl] == 5:
+            w *= prm[P_AVOID5]
+        elif fouls[d, pl] == 4:
+            w *= prm[P_AVOID4]
+        w5b[k] = w
+
+
+@njit(cache=True)
 def _period_end(per):
     if per <= 4:
         return per * 720.0
@@ -65,9 +82,11 @@ def _period_end(per):
 
 @njit(cache=True)
 def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, cap, q, cumfrac, dfac,
-          garbage, mb_edges, p_int, prm, P,
-          stats, secs, score, team_reb, team_tov, poss, hist):
-    """Simulate one game in place (stats/secs/score/... are this game's output slices)."""
+          garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off, prm, P,
+          stats, secs, score, team_reb, team_tov, poss, hist, marks):
+    """Simulate one game in place (stats/secs/score/... are this game's output slices).
+    ``marks``: home-minus-away score with 60 s left in regulation and at the end of regulation; offense lead
+    and side at the first possession with <= 24 s left; 1 if a team ran out of eligible players."""
     # ---------------- participation, planned minutes ----------------
     played = np.zeros((2, P), dtype=np.bool_)
     target = np.zeros((2, P))
@@ -139,6 +158,8 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
     flim = np.array([prm[P_FOUL1], prm[P_FOUL2], prm[P_FOUL3], prm[P_FOUL4]])
     w5 = np.zeros(5)
     w5b = np.zeros(5)
+    marked = False
+    marked24 = False
     while True:
         # ---------------- lineups ----------------
         slot = min(int(clock // 60.0), 47) if period <= 4 else 100 + period
@@ -155,13 +176,15 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                     n_ok += 1
                     if period <= 4:
                         planned = target[t, i] * 60.0 * cumfrac[t, i, slot]
-                        s = q[t, i, slot] + prm[P_GAMMA] * (planned - secs[t, i]) / 60.0 \
-                            + prm[P_PERSIST] * oncourt[t, i] + prm[P_NOISE] * np.random.standard_normal()
-                        if not rotation[t, i]:
-                            s -= prm[P_FRINGE_PEN]
+                        defi = prm[P_GAMMA] * (planned - secs[t, i]) / 60.0
                         crunch = period >= 4 and pend_ - clock <= 360.0
                         if fouls[t, i] >= flim[period - 1] and not crunch:
-                            s -= 2.5
+                            # foul trouble: sits until the period's limit rises (minutes owed do not pull him back)
+                            defi = min(defi, 0.0) - 2.5
+                        s = q[t, i, slot] + defi + prm[P_PERSIST] * oncourt[t, i] \
+                            + prm[P_NOISE] * np.random.standard_normal()
+                        if not rotation[t, i]:
+                            s -= prm[P_FRINGE_PEN]
                         if (period == 1 or period == 3) and (clock % 720.0) < 1e-6 and starter[t, i]:
                             s += 4.0
                         if period == 4:
@@ -184,6 +207,9 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                     for i in range(P):
                         if sc[i] <= -1e8 and exists[t, i] and fouls[t, i] < 6 and inj[t, i] > clock:
                             sc[i] = -1e6
+                            n_ok += 1
+                    if n_ok < 5:
+                        marks[4] = 1     # no eligible substitute left: a disqualified player stays in (NBA rule)
                 order = np.argsort(-sc[:P])
                 for i in range(P):
                     oncourt[t, i] = False
@@ -195,19 +221,49 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
         d = 1 - o
         pend = _period_end(period)
         # ---------------- possession ----------------
-        dur = np.random.gamma(shape, base_mean * pace_m / shape)
         t_left = pend - clock
+        if period == 4 and t_left <= 60.0 and not marked:
+            marks[0] = score[0] - score[1]
+            marked = True
+        if period == 4 and t_left <= 24.0 and not marked24:
+            marks[2] = score[o] - score[d]          # offense lead at the first possession with <= 24 s left
+            marks[3] = 1 if o == 0 else -1
+            marked24 = True
         lead = score[o] - score[d]
+        grp = 0 if lead >= 1 else (1 if lead == 0 else (2 if lead >= -3 else 3))
+        endgame = period >= 4 and t_left <= 24.0
+        heave = endgame and t_left <= prm[P_HEAVE_T]
+        p3_late = -1.0
+        li = 0
+        buzzer = False                                  # the first shot comes in the final seconds
+        if period >= 4 and t_left > 24.0 and t_left <= 120.0:
+            # last two minutes: leading teams run the clock, trailing teams hurry (data-driven means)
+            dur = np.random.gamma(shape, late_dur[0 if t_left > 60.0 else 1, grp] / shape)
+        else:
+            dur = np.random.gamma(shape, base_mean * pace_m / shape)
+        if endgame:
+            li = 0 if lead >= 1 else (1 - lead if lead >= -3 else 5)
+            p3_late = late3[1 if heave else 0, li]
+            if grp == 0:
+                dur = t_left                                   # leading: run out the clock unless fouled
+            elif (grp == 1 and np.random.random() < prm[P_HOLD_TIED]) or \
+                    (grp == 2 and np.random.random() < prm[P_HOLD_DOWN]):
+                dur = max(t_left - prm[P_HOLD_U] * np.random.random(), 0.2)   # hold for the last shot
+                buzzer = True
+                p3_late = late3[1, li]
+            else:
+                dur = min(np.random.gamma(shape, prm[P_QUICK_DUR] / shape), t_left)
         pint = 0.0
         if period >= 4 and t_left <= 60.0 and lead >= 1:
+            wi = 1 if t_left <= 24.0 else 0
             if lead <= 3:
-                pint = p_int[0]
+                pint = p_int[wi, 0]
             elif lead <= 6:
-                pint = p_int[1]
+                pint = p_int[wi, 1]
             elif lead <= 9:
-                pint = p_int[2]
+                pint = p_int[wi, 2]
             else:
-                pint = p_int[3]
+                pint = p_int[wi, 3]
         n_oreb = 0
         alive = True
         # helpers inlined: weights for current five
@@ -229,10 +285,10 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                     stats[o, lineup[o, k], PM] += 1
                     stats[d, lineup[d, k], PM] -= 1
         if np.random.random() < pint:
-            dur = 2.0 + 4.0 * np.random.random()
+            dur = min(2.0 + 4.0 * np.random.random(), max(t_left, 0.1))
+            heave = False
             # foul on defense
-            for k in range(5):
-                w5b[k] = rates[d, lineup[d, k], PF_R]
+            _foul_weights(rates, lineup, d, fouls, prm, w5b)
             j = _choice(w5b, 5)
             stats[d, lineup[d, j], PF] += 1
             fouls[d, lineup[d, j]] += 1
@@ -258,6 +314,38 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                 alive = _rebound(rates, dfac, zeta, lineup, o, d, prm, stats, team_reb, w5b)
                 if alive:
                     n_oreb += 1
+        if alive and heave:
+            # final seconds: one hurried shot (a heave or a quick catch-and-shoot), or the clock runs out
+            alive = False
+            dur = t_left
+            if grp != 0:
+                ku = _choice(w5, 5)
+                user = lineup[o, ku]
+                three = np.random.random() < p3_late
+                # less time, worse shot: from a set play with ~4 s to a full-court heave with under a second
+                tf = min(max((t_left - 0.3) / (prm[P_HEAVE_T] - 0.3), 0.0), 1.0)
+                if three:
+                    stats[o, user, FGA3] += 1
+                    made = np.random.random() < heave_fg[li, 1] * tf
+                else:
+                    stats[o, user, FGA2] += 1
+                    made = np.random.random() < heave_fg[li, 0] * tf
+                if made:
+                    pts = 3 if three else 2
+                    stats[o, user, FGM3 if three else FGM2] += 1
+                    stats[o, user, PTS] += pts
+                    score[o] += pts
+                    for k in range(5):
+                        stats[o, lineup[o, k], PM] += pts
+                        stats[d, lineup[d, k], PM] -= pts
+                else:
+                    if np.random.random() < prm[P_TEAM_REB]:
+                        team_reb[d, 1] += 1
+                    else:
+                        for k in range(5):
+                            w5b[k] = rates[d, lineup[d, k], DREB_R] * math.exp(zeta[d, lineup[d, k]])
+                        j = _choice(w5b, 5)
+                        stats[d, lineup[d, j], DREB] += 1
         if alive and np.random.random() < prm[P_TEAM_TOV]:
             team_tov[o] += 1
             alive = False
@@ -265,16 +353,18 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
         while alive and plays < 6:
             plays += 1
             if np.random.random() < prm[P_NSF]:
-                for k in range(5):
-                    w5b[k] = rates[d, lineup[d, k], PF_R]
+                _foul_weights(rates, lineup, d, fouls, prm, w5b)
                 j = _choice(w5b, 5)
                 stats[d, lineup[d, j], PF] += 1
                 fouls[d, lineup[d, j]] += 1
             ku = _choice(w5, 5)
             user = lineup[o, ku]
-            p_tov = min(max(rates[o, user, TOV_SH] * dfac[d, F_TOV], 0.01), 0.6)
+            p_tov = min(max(rates[o, user, TOV_SH] * dfac[d, F_TOV] * prm[P_TOV_MULT], 0.01), 0.6)
             s3 = min(max(rates[o, user, FGA3_SH] * dfac[d, F_3SH], 0.0), 0.95)
             st_ = min(max(rates[o, user, TRIP_SH] * dfac[d, F_TRIP] * prm[P_TRIP_MULT], 0.0), 0.6)
+            last_shot = buzzer and plays == 1
+            if last_shot:
+                st_ *= 0.5                                # fewer shooting fouls called on last-second shots
             s2 = max(1.0 - s3 - st_, 0.02)
             tot = s2 + s3 + st_
             if np.random.random() < p_tov:
@@ -287,7 +377,7 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                 if np.random.random() < p_stl:
                     j = _choice(w5b, 5)
                     stats[d, lineup[d, j], STL] += 1
-                elif np.random.random() < min(rates[o, user, OFFF] / max(1.0 - p_stl, 0.1), 1.0):
+                elif fouls[o, user] < 6 and np.random.random() < min(rates[o, user, OFFF] / max(1.0 - p_stl, 0.1), 1.0):
                     stats[o, user, PF] += 1
                     fouls[o, user] += 1
                 alive = False
@@ -295,8 +385,7 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
             u2 = np.random.random() * tot
             if u2 >= s3 and u2 < s3 + st_:
                 # FT trip (shooting foul on a miss / penalty foul)
-                for k in range(5):
-                    w5b[k] = rates[d, lineup[d, k], PF_R]
+                _foul_weights(rates, lineup, d, fouls, prm, w5b)
                 j = _choice(w5b, 5)
                 stats[d, lineup[d, j], PF] += 1
                 fouls[d, lineup[d, j]] += 1
@@ -320,7 +409,11 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                     if alive:
                         n_oreb += 1
                 continue
-            three = u2 < s3
+            late_shot = p3_late >= 0.0 and plays == 1
+            if late_shot:
+                three = np.random.random() < p3_late       # end-of-game shot selection by score
+            else:
+                three = u2 < s3
             if three:
                 stats[o, user, FGA3] += 1
                 base_p = rates[o, user, FG3]
@@ -329,6 +422,27 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                 stats[o, user, FGA2] += 1
                 base_p = rates[o, user, FG2]
                 dsh = _logit(dfac[d, F_FG2] * prm[P_LG_FG2]) - _logit(prm[P_LG_FG2]) + prm[P_FG2_OFF]
+            if period >= 4 and t_left <= 120.0:
+                # late-game shooting by time left and score (contested shots, shot-clock pressure)
+                dsh += late_off[0 if t_left > 60.0 else (1 if t_left > 24.0 else 2), grp, 1 if three else 0]
+            if last_shot:
+                # a held last shot is taken with the clock expiring: final-seconds make rates by score
+                made = False
+                blocked = False
+                if np.random.random() < heave_fg[li, 1 if three else 0]:
+                    made = True
+                if made:
+                    pts = 3 if three else 2
+                    stats[o, user, FGM3 if three else FGM2] += 1
+                    stats[o, user, PTS] += pts
+                    score[o] += pts
+                    for k in range(5):
+                        stats[o, lineup[o, k], PM] += pts
+                        stats[d, lineup[d, k], PM] -= pts
+                else:
+                    _rebound(rates, dfac, zeta, lineup, o, d, prm, stats, team_reb, w5b)
+                alive = False                             # the clock runs out on a miss
+                continue
             home_sign = 1.0 if o == 0 else -1.0
             shift = prm[P_SHIFT_H] if o == 0 else prm[P_SHIFT_A]
             # score effect: efficiency drifts against the leading team (within-game mean reversion)
@@ -376,8 +490,7 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                     j = _choice(w5b, 5)
                     stats[o, lineup[o, j], AST] += 1
                 if np.random.random() < rates[o, user, AND1]:
-                    for k in range(5):
-                        w5b[k] = rates[d, lineup[d, k], PF_R]
+                    _foul_weights(rates, lineup, d, fouls, prm, w5b)
                     j = _choice(w5b, 5)
                     stats[d, lineup[d, j], PF] += 1
                     fouls[d, lineup[d, j]] += 1
@@ -421,6 +534,8 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                 if fouls[t, lineup[t, k]] >= 6:
                     resel = True
         if clock >= pend - 1e-9:
+            if period == 4:
+                marks[1] = score[0] - score[1]
             if period >= 4 and score[0] != score[1]:
                 break
             period += 1
@@ -452,7 +567,7 @@ def _rebound(rates, dfac, zeta, lineup, o, d, prm, stats, team_reb, w5b):
     for k in range(5):
         osum += rates[o, lineup[o, k], OREB_R] * math.exp(zeta[o, lineup[o, k]])
         dsum += rates[d, lineup[d, k], DREB_R] * math.exp(zeta[d, lineup[d, k]])
-    osum *= dfac[d, F_OREB]
+    osum *= dfac[d, F_OREB] * prm[P_OREB_MULT]
     if np.random.random() < osum / (osum + dsum):
         for k in range(5):
             w5b[k] = rates[o, lineup[o, k], OREB_R] * math.exp(zeta[o, lineup[o, k]])
@@ -468,7 +583,7 @@ def _rebound(rates, dfac, zeta, lineup, o, d, prm, stats, team_reb, w5b):
 
 @njit(cache=True, parallel=True)
 def simulate(n, n_chunks, seed, rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, cap, q,
-             cumfrac, dfac, garbage, mb_edges, p_int, prm, P, track_lineups):
+             cumfrac, dfac, garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off, prm, P, track_lineups):
     stats = np.zeros((n, 2, P, N_STATS), dtype=np.int16)
     secs = np.zeros((n, 2, P), dtype=np.float32)
     score = np.zeros((n, 2), dtype=np.int32)
@@ -476,6 +591,7 @@ def simulate(n, n_chunks, seed, rates, exists, p_play, plan, min_sd, starter, ro
     team_tov = np.zeros((n, 2), dtype=np.int16)
     poss = np.zeros((n, 2), dtype=np.int16)
     periods = np.zeros(n, dtype=np.int16)
+    marks = np.zeros((n, 5), dtype=np.int16)
     hsize = (1 << P) if track_lineups else 1
     hist = np.zeros((n_chunks, 2, hsize))
     per_chunk = (n + n_chunks - 1) // n_chunks
@@ -489,6 +605,7 @@ def simulate(n, n_chunks, seed, rates, exists, p_play, plan, min_sd, starter, ro
         tr = np.zeros((2, 2), dtype=np.int64)
         tt = np.zeros(2, dtype=np.int64)
         ps = np.zeros(2, dtype=np.int64)
+        mk = np.zeros(5, dtype=np.int64)
         hc = hist[c]                     # this chunk's lineup histogram (single thread -> no races)
         for g in range(lo, hi):
             sc64[:] = 0.0
@@ -497,8 +614,12 @@ def simulate(n, n_chunks, seed, rates, exists, p_play, plan, min_sd, starter, ro
             tr[:] = 0
             tt[:] = 0
             ps[:] = 0
+            mk[:] = 0
             per = _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, cap, q, cumfrac, dfac,
-                        garbage, mb_edges, p_int, prm, P, sstat, sc64, sc_, tr, tt, ps, hc)
+                        garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off, prm, P, sstat, sc64, sc_, tr,
+                        tt, ps, hc, mk)
+            for k in range(5):
+                marks[g, k] = mk[k]
             for t in range(2):
                 score[g, t] = sc_[t]
                 team_tov[g, t] = tt[t]
@@ -510,4 +631,4 @@ def simulate(n, n_chunks, seed, rates, exists, p_play, plan, min_sd, starter, ro
                     for s in range(N_STATS):
                         stats[g, t, i, s] = sstat[t, i, s]
             periods[g] = per
-    return stats, secs, score, team_reb, team_tov, poss, periods, hist
+    return stats, secs, score, team_reb, team_tov, poss, periods, hist, marks

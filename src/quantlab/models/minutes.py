@@ -2,8 +2,14 @@
 
 Information set at tip-off (see docs/METHODOLOGY.md): every feature is from
 earlier dates, plus the two pieces of same-day information that are public
-before tip-off - who is active (oracle participation in the backtest: the
-players who appeared) and, for the "lineups known" variant, the starting five.
+before tip-off - who is available (the injury report / inactive list) and, for
+the "lineups known" variant, the starting five. The sources have the inactive
+list only for 2020-21..2023-24; the walk-forward pipeline therefore uses who
+appeared as its stand-in for rotation players in every season (consistent
+training and test features), and ``exact_availability_experiment`` measures on
+2023-24 what that stand-in is worth (it also reveals coach's-decision DNPs).
+The "pregame" (no lineup information) variant uses a lineup-blind rotation
+rule (``rotation_pre`` / ``share_of_avail_pre``).
 
 Models compared (walk-forward; for season S a model is trained on seasons < S):
 
@@ -33,6 +39,8 @@ FEATURES = ["exp_min", "min_l3", "min_l5", "min_l10", "last_min", "season_min_av
             "vacated_min", "slack_min", "n_absent_15", "vacated_used_share", "n_baseline", "share_of_avail",
             "new_team", "career_games", "season_games", "abs_spread", "fav", "is_home", "exp_usg", "gp_m20"]
 STARTER_FEATURES = ["starter", "n_starters_known_min"]
+# lineup-blind variant: the rotation flag and the availability share do not use today's starters
+FEATURES_PRE = [{"rotation": "rotation_pre", "share_of_avail": "share_of_avail_pre"}.get(c, c) for c in FEATURES]
 GBM_PARAMS = dict(objective="regression", learning_rate=0.03, num_leaves=31, min_data_in_leaf=200,
                   feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=5.0, verbose=-1,
                   num_threads=int(os.environ.get("QUANTLAB_THREADS", "4")), seed=7, deterministic=True,
@@ -48,6 +56,9 @@ def minutes_frame(feats: pd.DataFrame, team_pred: pd.DataFrame, tg: pd.DataFrame
     f["start_rate"] = f["starts_m20"] / f["gp_m20"].replace(0, np.nan)
     # pregame-legit denominator from team_context (rotation participants + fringe baseline minutes)
     f["share_of_avail"] = f["exp_min"] / f["avail_exp_min"].replace(0, np.nan)
+    if "avail_exp_min_pre" in f:
+        f["share_of_avail_pre"] = f["exp_min"] / f["avail_exp_min_pre"].replace(0, np.nan)
+        f["rotation_pre"] = f["rotation_pre"].astype(float)
     rest = tg[["game_id", "team_id", "rest_days", "b2b"]]
     f = f.merge(rest, on=["game_id", "team_id"], how="left")
     tp = team_pred[["game_id", "home_team_id", "exp_margin"]]
@@ -79,16 +90,16 @@ def _fit(train: pd.DataFrame, cols: list[str]) -> lgb.Booster:
     return lgb.train(GBM_PARAMS, ds, num_boost_round=N_ROUNDS)
 
 
-def normalize_team(f: pd.DataFrame, pred: pd.Series, total: float = 241.5) -> pd.Series:
+def normalize_team(f: pd.DataFrame, pred: pd.Series, total: float = 241.5, suffix: str = "") -> pd.Series:
     """Scale rotation players so that rotation + expected fringe minutes = 240 x expected game length.
 
     Fringe players (whose participation is not known pregame) keep their conditional projection and
     enter the budget only through their baseline minutes, so normalization never uses who played in
-    garbage time.
+    garbage time. ``suffix="_pre"`` uses the lineup-blind rotation rule.
     """
-    rot = f["rotation"] == 1
+    rot = f[f"rotation{suffix}"] == 1
     rot_sum = pred.where(rot, 0.0).groupby([f["game_id"], f["team_id"]]).transform("sum")
-    budget = (total - f["fringe_base_min"].fillna(0)).clip(lower=150)
+    budget = (total - f[f"fringe_base_min{suffix}"].fillna(0)).clip(lower=150)
     scale = (budget / rot_sum.replace(0, np.nan)).clip(0.8, 1.25).fillna(1.0)
     return pred.where(~rot, pred * scale)
 
@@ -104,12 +115,12 @@ def walk_forward_minutes(f: pd.DataFrame, seasons: list[str], log=print) -> tupl
         b = baselines(test)
         for c in b:
             test[f"pred_{c}"] = b[c].to_numpy()
-        m_a = _fit(train, FEATURES)
+        m_a = _fit(train, FEATURES_PRE)
         m_b = _fit(train, FEATURES + STARTER_FEATURES)
-        test["pred_gbm_pre"] = m_a.predict(test[FEATURES].astype(np.float32))
+        test["pred_gbm_pre"] = m_a.predict(test[FEATURES_PRE].astype(np.float32))
         test["pred_gbm"] = m_b.predict(test[FEATURES + STARTER_FEATURES].astype(np.float32))
         test["pred_gbm_norm"] = normalize_team(test, test["pred_gbm"])
-        test["pred_gbm_pre_norm"] = normalize_team(test, test["pred_gbm_pre"])
+        test["pred_gbm_pre_norm"] = normalize_team(test, test["pred_gbm_pre"], suffix="_pre")
         models[s] = {"lineups_known": m_b, "pregame": m_a}
         outs.append(test)
         log(f"[minutes] {s}: trained on {len(train):,} player-games, predicted {len(test):,}")
@@ -159,7 +170,7 @@ def run_minutes(log=print) -> pd.DataFrame:
     residual_table(pred[pred["season"] == "2023-24"], col="pred_gbm").to_csv(PATHS.models / "minutes_residuals.csv", index=False)
     # final model for live use: trained on everything up to the last season
     played = f[f["played"] & (f["season"] > sorted(f["season"].unique())[0])]
-    for name, cols in (("lineups_known", FEATURES + STARTER_FEATURES), ("pregame", FEATURES)):
+    for name, cols in (("lineups_known", FEATURES + STARTER_FEATURES), ("pregame", FEATURES_PRE)):
         _fit(played, cols).save_model(str(PATHS.models / f"minutes_gbm_{name}.txt"))
     imp = pd.Series(models["2025-26"]["lineups_known"].feature_importance("gain"),
                     index=FEATURES + STARTER_FEATURES).sort_values(ascending=False)
@@ -185,3 +196,82 @@ def save_season_models(log=print) -> None:
         train = played[(played["season"] < s) & (played["season"] > seasons[0])]
         _fit(train, cols).save_model(str(PATHS.models / f"minutes_gbm_{s}.txt"))
         log(f"[minutes] saved model for {s} ({len(train):,} rows)")
+
+
+def exact_frame(f: pd.DataFrame) -> pd.DataFrame:
+    """The minutes frame with teammate-availability context from the official inactive list
+    (dressed = played or DNP-coach's decision) instead of who appeared; seasons with official box scores only."""
+    ctx = pd.read_parquet(PATHS.features / "team_context_exact.parquet")
+    pctx = pd.read_parquet(PATHS.features / "player_context_exact.parquet")
+    from ..features.asof import CTX_VARIANT_COLS
+    x = f[f["game_id"].isin(ctx["game_id"])].drop(columns=CTX_VARIANT_COLS + ["rotation"])
+    x = x.merge(ctx[["game_id", "team_id"] + CTX_VARIANT_COLS], on=["game_id", "team_id"], how="left")
+    x = x.merge(pctx[["game_id", "person_id", "rotation"]], on=["game_id", "person_id"], how="left")
+    x["rotation"] = x["rotation"].eq(True).astype(float)
+    x["share_of_avail"] = x["exp_min"] / x["avail_exp_min"].replace(0, np.nan)
+    return x
+
+
+def exact_availability_experiment(season: str = "2023-24", log=print) -> dict:
+    """What the appearance stand-in for the inactive list is worth: train on the history seasons and predict
+    ``season`` once with the stand-in (who appeared) and once with the official inactive list, same rows."""
+    feats = pd.read_parquet(PATHS.features / "player_asof.parquet")
+    tp = pd.read_parquet(PATHS.models / "team_predictions.parquet")
+    tg = pd.read_parquet(PATHS.processed("all") / "team_games.parquet")
+    f = minutes_frame(feats, tp, tg)
+    x = exact_frame(f)
+    seasons = sorted(f["season"].unique())
+    cols = FEATURES + STARTER_FEATURES
+    out = {"season": season}
+    preds = {}
+    for name, frame in (("appearance_proxy", f), ("inactive_list", x)):
+        pl = frame[frame["played"]]
+        train = pl[(pl["season"] < season) & (pl["season"] > seasons[0])]
+        test = pl[pl["season"] == season]
+        m = _fit(train, cols)
+        preds[name] = pd.Series(m.predict(test[cols].astype(np.float32)), index=test.set_index(
+            ["game_id", "person_id"]).index)
+        mp = _fit(train, FEATURES_PRE if name == "appearance_proxy" else FEATURES)
+        preds[name + "_pre"] = pd.Series(mp.predict(test[FEATURES_PRE if name == "appearance_proxy"
+                                                         else FEATURES].astype(np.float32)),
+                                         index=preds[name].index)
+        if name == "appearance_proxy":
+            actual = test.set_index(["game_id", "person_id"])["min"]
+    common = preds["appearance_proxy"].index.intersection(preds["inactive_list"].index)
+    y = actual.reindex(common)
+    for k, v in preds.items():
+        out[f"mae_{k}"] = float((v.reindex(common) - y).abs().mean())
+    out["n"] = int(len(common))
+    out["mae_leak"] = out["mae_inactive_list"] - out["mae_appearance_proxy"]
+    # how many 'absent' rotation players were in fact dressed (DNP - coach's decision)
+    ctx_p = pd.read_parquet(PATHS.features / "team_context.parquet")
+    av = pd.read_parquet(PATHS.processed("all") / "availability.parquet")
+    av = av[av["season"].isin(seasons[1:4])]
+    ab = ctx_p[ctx_p["game_id"].isin(av["game_id"])][["game_id", "team_id", "absent"]]
+    ab = ab[ab["absent"] != ""].assign(person_id=lambda d: d["absent"].str.split("-")).explode("person_id")
+    ab["person_id"] = ab["person_id"].astype("int64")
+    ab = ab.merge(av[["game_id", "person_id", "status"]], on=["game_id", "person_id"], how="left")
+    out["absent_rotation_status_share"] = {k: round(float(v), 4) for k, v in
+                                           ab["status"].fillna("not_listed").value_counts(normalize=True).items()}
+    out["absent_rotation_n"] = int(len(ab))
+    # propagation to points: the closed-form EB points projection with each set of projected minutes
+    try:
+        from ..eval.baselines import add_model_inputs, eb_expectations, load_frame
+        df = load_frame()
+        d = add_model_inputs(df[df["played"] & (df["season"] == season)].copy()).reset_index(drop=True)
+        key = pd.MultiIndex.from_frame(d[["game_id", "person_id"]])
+        ok = key.isin(common)
+        d = d[ok].reset_index(drop=True)
+        key = pd.MultiIndex.from_frame(d[["game_id", "person_id"]])
+        for name in ("appearance_proxy", "inactive_list"):
+            dd = d.copy()
+            dd["pred_gbm"] = preds[name].reindex(key).to_numpy()
+            e = eb_expectations(dd)
+            for st_ in ("pts", "reb", "ast", "pra"):
+                out[f"eb_{st_}_mae_{name}"] = float((e[st_] - dd[st_]).abs().mean())
+        out["eb_n"] = int(len(d))
+    except Exception as exc:          # pragma: no cover - informative only
+        out["eb_error"] = str(exc)
+    (PATHS.models / "availability_experiment.json").write_text(json.dumps(out, indent=2))
+    log(f"[minutes] inactive-list experiment {season}: {out}")
+    return out

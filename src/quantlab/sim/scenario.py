@@ -5,10 +5,12 @@ A ``Scenario`` edits a pregame ``GameSpec``:
 * ``out``             players removed (injury, rest) - the minutes model is re-run for the remaining
                       players with the updated teammate-absence features, so minutes are redistributed
                       the way they historically were (not pro rata);
-* ``minutes``         manual projected-minutes overrides (honoured in expectation by calibration);
+* ``minutes``         manual projected-minutes overrides (honoured in expectation by calibration and never
+                      rescaled by the team's minutes budget);
 * ``starters``        manual starting five per team;
 * ``availability``    participation probabilities (e.g. 0.5 for a questionable player: each simulated
-                      game samples whether he plays, giving the correct mixture distribution);
+                      game samples whether he plays, giving the correct mixture distribution; his minutes
+                      when he plays stay at his projection and teammates absorb them when he sits);
 * ``usage``           usage multipliers (role changes); ``caps`` minutes restrictions.
 
 Shots, usage, assists and rebounds are then re-allocated inside the simulation (usage competition
@@ -83,8 +85,14 @@ def apply(spec: GameSpec, sc: Scenario, minutes_fn=None) -> GameSpec:
                 p.min_mean = float(sc.minutes[p.person_id])
                 p.rotation = p.min_mean >= 6 or p.rotation
                 p.p_play = 1.0 if p.rotation else p.p_play
+                p.locked = True                   # typed minutes are honoured, never rescaled by the budget
             if p.person_id in sc.availability:
-                p.p_play = float(sc.availability[p.person_id])
+                new_p = float(sc.availability[p.person_id])
+                if not p.rotation and p.person_id not in sc.minutes and p.p_play > 0:
+                    p.min_mean *= new_p / p.p_play    # fringe: same minutes when he plays, new participation
+                p.p_play = new_p
+                if not p.rotation:
+                    p.locked = True
             if p.person_id in sc.usage:
                 p.usage_mult = float(sc.usage[p.person_id])
             if p.person_id in sc.caps:

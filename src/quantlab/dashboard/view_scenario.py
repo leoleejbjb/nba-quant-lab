@@ -7,6 +7,8 @@ re-allocated inside the possession simulation, and both versions are simulated w
 
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -15,16 +17,20 @@ import streamlit as st
 from quantlab.dashboard import state, style
 from quantlab.dashboard.view_game import _game_picker
 from quantlab.sim import props
+from quantlab.sim.engine import GameSimulator
 from quantlab.sim.scenario import Scenario, compare
 
 
 def roster_frame(spec) -> pd.DataFrame:
+    """Editable roster with the values the simulation actually uses (after the team's minutes budget):
+    rotation players' minutes if they play, fringe players' expected minutes and participation."""
+    sim = GameSimulator(copy.deepcopy(spec))
     rows = []
-    for team in (spec.away, spec.home):
-        for p in team.players:
+    for t, team in ((1, spec.away), (0, spec.home)):
+        for i, p in enumerate(team.players):
             rows.append({"team_id": team.team_id, "Team": team.name, "person_id": p.person_id, "Player": p.name,
-                         "Out": False, "Starter": bool(p.starter), "Proj MIN": round(float(p.min_mean), 1),
-                         "P(play)": round(float(p.p_play), 2), "Usage x": 1.0, "MIN cap": 48.0,
+                         "Out": False, "Starter": bool(p.starter), "Proj MIN": round(float(sim.min_mean[t, i]), 1),
+                         "P(play)": round(float(sim.p_play[t, i]), 2), "Usage x": 1.0, "MIN cap": 48.0,
                          "rotation": bool(p.rotation)})
     return pd.DataFrame(rows)
 
@@ -74,9 +80,14 @@ def render() -> None:
                         disabled=["Team", "Player"],
                         column_config={"Out": st.column_config.CheckboxColumn(help="Ruled out (injury / rest)"),
                                        "Starter": st.column_config.CheckboxColumn(help="Five per team"),
-                                       "Proj MIN": st.column_config.NumberColumn(min_value=0.0, max_value=48.0, step=0.5),
-                                       "P(play)": st.column_config.NumberColumn(min_value=0.0, max_value=1.0, step=0.05,
-                                                                              help="Availability probability (e.g. 0.5 = questionable)"),
+                                       "Proj MIN": st.column_config.NumberColumn(
+                                           min_value=0.0, max_value=48.0, step=0.5,
+                                           help="Rotation players: minutes if he plays. Deep bench: expected minutes "
+                                                "per game. Edited values are used as typed."),
+                                       "P(play)": st.column_config.NumberColumn(
+                                           min_value=0.0, max_value=1.0, step=0.05,
+                                           help="Probability he plays (e.g. 0.5 = questionable; deep bench: the "
+                                                "chance he gets into the game). Edited values are used as typed."),
                                        "Usage x": st.column_config.NumberColumn(min_value=0.3, max_value=2.0, step=0.05),
                                        "MIN cap": st.column_config.NumberColumn(min_value=0.0, max_value=48.0, step=1.0,
                                                                               help="Minutes restriction")})

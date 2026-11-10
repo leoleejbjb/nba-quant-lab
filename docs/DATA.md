@@ -32,12 +32,12 @@ lineup project.
 
 | Table | Rows | Content |
 |---|---:|---|
-| `player_games` | 155,125 | every player-game 2020-21..2025-26: MIN, PTS, FGA/FGM by 2/3, FTA/FTM, OREB/DREB, AST, STL, BLK, TOV, PF, +/-, starter, assisted makes, FT trips, and-ones, fouls drawn, usage, TS%, eFG%, double/triple-double flags, and on-court exposures (team/opponent possessions, shots, FT trips, turnovers, points, rebound chances) |
+| `player_games` | 154,391 | every player-game 2020-21..2025-26: MIN, PTS, FGA/FGM by 2/3, FTA/FTM, OREB/DREB, AST, STL, BLK, TOV, PF, +/-, starter, assisted makes, FT trips, and-ones, fouls drawn, usage, TS%, eFG%, double/triple-double flags, and on-court exposures (team/opponent possessions, shots, FT trips, turnovers, points, rebound chances). Coaches and staff charged with bench technicals (734 zero-minute rows of people who never played) are excluded |
 | `team_games` | 14,460 | team box score incl. team rebounds and team turnovers, possessions, opponent columns, rest days |
 | `games` | 7,230 | teams, date, tip time, score, overtime, reconciliation flags |
-| `availability` | 177,829 | 2020-24: played / dressed-but-unused (DNP-CD) / out (DND, NWT, injury) from official comments |
+| `availability` | 177,057 | 2020-21..2023-24 from the official box-score comments: `played`, `dnp_cd` (dressed but unused: "DNP - Coach's Decision" or listed at 0:00) or `out` (every DND - including "DND - Coach's Decision" - NWT, DNP-injury, rest and suspension comment). 2024-25 and 2025-26 have no official box scores, so only `played` rows exist (from the play-by-play, `source = pbp`): who was dressed but unused, or out, is unknown there |
 | `stints` (per season) | ~37k / season | both five-man units, start/end, duration, points, possessions, score margin at the start, validity |
-| `possessions` (per season) | ~243k / season | offense, period, start/end time, points, end reason, offensive rebounds |
+| `possessions` (per season) | ~243k / season | offense, period, `start_s` (when the previous possession ended, or the period start), `first_s` (time of its first recorded event), `end_s`, event indices, `lead_start` (offense lead before its first event), points, end reason, offensive rebounds, FT trips |
 | `box_compare` (2020-24) | | derived vs official value of every stat for every player-game |
 
 ## Coverage and reconciliation
@@ -60,6 +60,14 @@ lineup project.
   inferred format silently dropped 232 game dates in 2024-26 before it was fixed.
 * **Traded players** can appear in their former team's recent rotation; they are excluded from that team's
   fringe list when they appear for the opponent.
+* **Availability.** Who is available for a game (the injury report / inactive list) is public before tip-off but is
+  in the sources only through the 2020-24 box-score comments. Every season therefore uses who appeared as the
+  stand-in for rotation players' availability, so that training and test features mean the same thing. The stand-in
+  also reveals the rotation players a coach chose not to use: on 2021-24, 24.8% of the rotation players it treats as
+  unavailable were in fact dressed (DNP - coach's decision), and how often that happens depends on how the game went.
+  On 2023-24, where the official statuses exist, the minutes model is 0.066 minutes (1.5%) less accurate with the
+  official inactive list than with the stand-in, and points projections 0.011 (0.25%) - the size of the optimism this
+  leaves in the 2024-26 test numbers (`quantlab minutes` writes `data/models/availability_experiment.json`).
 
 ## Live 2026-27 data
 

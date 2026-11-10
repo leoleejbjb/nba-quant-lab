@@ -33,6 +33,19 @@ def render() -> None:
                                 if c not in ("Season", "Games", "Usable games", "Player-games")})
     st.caption("Official box scores exist in the pinned sources only through 2023-24; later seasons are checked for "
                "internal consistency (points conserved, 5 x game length minutes per team).")
+    ax_path = PATHS.models / "availability_experiment.json"
+    if ax_path.exists():
+        ax = json.loads(ax_path.read_text())
+        st.subheader("Who is available: the inactive-list stand-in")
+        st.markdown(
+            f"The injury report / inactive list is public before tip-off but is in the sources only for 2020-24. "
+            f"Every season therefore uses *who appeared* as the stand-in for rotation players' availability, which "
+            f"also reveals the rotation players a coach chose not to use: "
+            f"{ax['absent_rotation_status_share'].get('dnp_cd', 0):.1%} of the rotation players it treats as "
+            f"unavailable (2021-24) were dressed (DNP - coach's decision). On {ax['season']}, with the official "
+            f"statuses, the minutes model's MAE is **{ax['mae_appearance_proxy']:.3f}** with the stand-in and "
+            f"**{ax['mae_inactive_list']:.3f}** with the real inactive list (+{ax['mae_leak']:.3f}): the test-season "
+            "numbers carry about this much optimism.")
     st.subheader("Method in brief")
     st.markdown("""
 * **Data**: NBA liveData play-by-play 2020-21 .. 2025-26 (pinned mirror, SHA-256 verified). Player box scores,

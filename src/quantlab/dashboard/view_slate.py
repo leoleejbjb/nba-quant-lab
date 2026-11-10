@@ -41,7 +41,9 @@ def render() -> None:
                      "Spread (home)": st.column_config.NumberColumn(format="%+.1f",
                                                                     help="Negative = home team favoured"),
                      "Total": st.column_config.NumberColumn(format="%.1f"),
-                     "P(OT)": st.column_config.NumberColumn(format="percent"),
+                     "P(OT)": st.column_config.NumberColumn(format="percent",
+                                                            help="Simulated; understates real overtime rates "
+                                                                 "(see the Validation page)"),
                      "Team model spread": st.column_config.NumberColumn(format="%+.1f"),
                      "Team model total": st.column_config.NumberColumn(format="%.1f")})
     st.markdown("##### Open a game")

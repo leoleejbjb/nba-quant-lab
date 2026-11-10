@@ -251,6 +251,23 @@ def reconstruct_game(ev: pd.DataFrame, home: int, away: int, box: pd.DataFrame |
                      "team_tov": team_only[t]["team_tov"]})
     teams_df = pd.DataFrame(trow)
     elapsed = g.elapsed
+    # running score (through each event) for the offense's lead at possession start
+    ev_pts = np.nan_to_num(np.asarray(g.points, dtype=float))
+    cum = {t: np.cumsum(np.where(g.tid == t, ev_pts, 0.0)) for t in teams}
+
+    def score_before(t: int, i: int) -> float:
+        return float(cum[t][i - 1]) if i > 0 else 0.0
+
+    # possession start = end of the previous possession in the period (either team), else the period start;
+    # first_s is the time of the possession's first recorded event (often later: an inbound has no event)
+    true_start, prev_end, prev_period = [], None, None
+    for pp in poss:
+        if pp.period != prev_period:
+            prev_end, prev_period = float(period_start(pp.period)), pp.period
+        true_start.append(prev_end)
+        prev_end = float(elapsed[pp.end_idx])
+    trip_ft = np.array([g.at[i] == "freethrow" and g.st[i] in ("1 of 2", "1 of 3") and g.desc[i] != "technical"
+                        for i in range(g.n)], dtype=bool)
     poss_df = pd.DataFrame({
         "game_id": g.game_id,
         "period": [pp.period for pp in poss],
@@ -259,8 +276,18 @@ def reconstruct_game(ev: pd.DataFrame, home: int, away: int, box: pd.DataFrame |
         "reason": [pp.reason for pp in poss],
         "points": [pp.points for pp in poss],
         "n_oreb": [pp.n_oreb for pp in poss],
-        "start_s": [float(elapsed[min(pp.start_idx, g.n - 1)]) for pp in poss],
+        "start_s": true_start,
+        "first_s": [float(elapsed[min(pp.start_idx, g.n - 1)]) for pp in poss],
         "end_s": [float(elapsed[pp.end_idx]) for pp in poss],
+        "start_idx": [int(pp.start_idx) for pp in poss],
+        "end_idx": [int(pp.end_idx) for pp in poss],
+        # offense lead before the possession's first event (its own points excluded)
+        "lead_start": [int(round(score_before(pp.offense, pp.start_idx)
+                                 - score_before(away if pp.offense == home else home, pp.start_idx)))
+                       for pp in poss],
+        # non-technical free-throw trips (first FT of 2 or 3) by the offense during the possession
+        "n_trips": [int(sum(trip_ft[i] and g.tid[i] == pp.offense for i in range(pp.start_idx, pp.end_idx + 1)))
+                    for pp in poss],
     })
     starters_df = pd.DataFrame([{"game_id": g.game_id, "period": k[0], "team_id": k[1], "status": v.status,
                                  "filled": "-".join(map(str, sorted(v.filled)))}

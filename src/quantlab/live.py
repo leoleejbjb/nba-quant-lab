@@ -29,19 +29,27 @@ class MinutesReprojector:
         self.frame = pd.read_parquet(PATHS.models / "minutes_features.parquet")
         self.by_game = {g: d for g, d in self.frame.groupby("game_id")}
         self.models: dict = {}
+        self.last_status = ""
 
     def model(self, season: str):
+        """The minutes model trained on seasons before ``season`` (None if there is none: the first two
+        seasons have no walk-forward model, and the all-seasons model would use future games)."""
         if season not in self.models:
             path = PATHS.models / f"minutes_gbm_{season}.txt"
-            if not path.exists():
-                path = PATHS.models / "minutes_gbm_lineups_known.txt"
-            self.models[season] = lgb.Booster(model_file=str(path))
+            self.models[season] = lgb.Booster(model_file=str(path)) if path.exists() else None
         return self.models[season]
 
     def __call__(self, game_id: int, team, removed: list) -> None:
         f = self.by_game.get(game_id)
         if f is None:
+            self.last_status = "no minutes features for this game: minutes not re-projected"
             return
+        season = str(f["season"].iloc[0])
+        if self.model(season) is None:
+            self.last_status = (f"no walk-forward minutes model for {season}: minutes not re-projected "
+                                "(removed players' minutes are shared out by the simulator's 240-minute budget)")
+            return
+        self.last_status = f"minutes re-projected with the model trained on seasons before {season}"
         tf = f[f["team_id"] == team.team_id].set_index("person_id")
         gone = tf.loc[tf.index.intersection(removed)]
         rest = tf.loc[tf.index.intersection([p.person_id for p in team.players])].copy()
@@ -132,12 +140,15 @@ class Projector:
         w = env_weight if env_weight is not None else default_blend_weight()
         spec = copy.deepcopy(base_spec) if base_spec is not None else self.spec(game_id)
         shift = self.environment_shift(game_id, environment, w) if environment != "none" else (0.0, 0.0)
+        self.reproj.last_status = ""
         if scenario is not None and not scenario.is_empty():
             spec = apply(spec, scenario, self.minutes_fn(game_id))
         spec.home.eff_shift, spec.away.eff_shift = shift
         sim = GameSimulator(spec, self.params)
         info = sim.calibrate(environment="none")          # minutes only; environment fixed above
         info["environment_shift"] = list(shift)
+        if self.reproj.last_status:
+            info["minutes_reprojection"] = self.reproj.last_status
         res = sim.run(n, seed=seed)
         return Projection(int(game_id), spec, res, info)
 

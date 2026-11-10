@@ -11,7 +11,8 @@ from ..config import ALL_SEASONS, PATHS, PROJECT_ROOT
 LABEL = {"season_avg": "Season average", "l10": "Last-10 average", "per_min": "Per-minute x projected minutes",
          "opp_adj": "Opponent-adjusted per-minute", "eb": "Empirical-Bayes rates (closed form)",
          "gbm": "Gradient boosting (LightGBM, Poisson)", "sim_none": "Possession simulation (bottom-up)",
-         "sim_team": "Possession simulation (team-constrained)", "topdown": "Team-first reconciliation"}
+         "sim_team": "Possession simulation (team-constrained)", "sim_blend": "Possession simulation (blend, shipped)",
+         "topdown": "Team-first reconciliation"}
 STATS = ["pts", "reb", "ast", "fg3m", "pra", "stl", "blk", "tov"]
 
 
@@ -44,9 +45,24 @@ def write_findings(summ: dict | None = None) -> str:
         out += [f"## Player statistics - {split} ({n:,} player-games, identical across models)", ""]
         for value, title, fmt in (("mae", "MAE", ".3f"), ("rmse", "RMSE", ".3f"), ("crps", "CRPS (lower is better)", ".3f"),
                                   ("pit_dev", "Calibration error: PIT histogram L1 distance from uniform (0 = perfect)", ".3f"),
-                                  ("cov80", "80% interval coverage (inclusive ends; discrete stats sit above 80% when calibrated)", ".3f"),
+                                  ("cov80", "80% interval coverage: share of outcomes in the central 80% of the forecast "
+                                   "distribution, ties randomized (0.800 = calibrated)", ".3f"),
+                                  ("p_pit_below_half", "Share of outcomes below the forecast median (randomized; 0.500 = "
+                                   "calibrated, above 0.5 = forecast too high)", ".3f"),
                                   ("bias", "Bias (prediction - actual)", "+.3f")):
             out += [f"### {title}", "", _table(pc, value, fmt), ""]
+        rel = summ.get(f"reliability_{split}", {})
+        if rel:
+            out += ["### Over/under reliability: mean predicted P(over) minus observed over rate (points; 0 = calibrated)",
+                    "", "| Model | Line | " + " | ".join(s_.upper() for s_ in STATS) + " |",
+                    "|---|---|" + "---:|" * len(STATS)]
+            for m in ("sim_blend", "sim_none", "sim_team", "topdown"):
+                for kind, label in (("", "nearest half point"), ("|ladder", "nearest -2 .. +2")):
+                    vals = [rel.get(f"{s_}|{m}{kind}", {}).get("mean_gap") for s_ in STATS]
+                    if any(v is not None for v in vals):
+                        out.append(f"| {LABEL[m]} | {label} | " + " | ".join(
+                            f"{100 * v:+.1f}" if v is not None else "–" for v in vals) + " |")
+            out.append("")
         mt = pd.DataFrame(summ[f"minutes_{split}"])
         out += ["### Minutes", "", "| Model | MAE | RMSE | Bias | MAE (rotation players) | n |", "|---|---:|---:|---:|---:|---:|"]
         for r in mt.itertuples():
@@ -58,12 +74,21 @@ def write_findings(summ: dict | None = None) -> str:
                 "| Forecast | Margin MAE | Margin RMSE | Total MAE | Total RMSE | Margin CRPS | Total CRPS | Win log-loss | Win Brier | Games |",
                 "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
         names = {"team_model": "Team model (ratings)", "sim_none": "Simulation (bottom-up)",
-                 "sim_team": "Simulation (team-constrained)", "blend": "Blend (team model + bottom-up simulation)"}
+                 "sim_team": "Simulation (team-constrained)", "sim_blend": "Simulation (blend environment, shipped)",
+                 "posthoc_blend": "Post-hoc average of team-model and bottom-up means (reference)"}
         for k, v in tm[split].items():
             if isinstance(v, dict) and "margin_rmse" in v:
                 out.append(f"| {names[k]} | {v['margin_mae']:.3f} | {v['margin_rmse']:.3f} | {v['total_mae']:.3f} | "
                            f"{v['total_rmse']:.3f} | {v['margin_crps']:.3f} | {v['total_crps']:.3f} | "
                            f"{v['win_logloss']:.4f} | {v['win_brier']:.4f} | {v['games']:,} |")
+        ots = [(k, v["p_ot"]) for k, v in tm[split].items() if isinstance(v, dict) and "p_ot" in v]
+        if ots:
+            out += ["", f"Overtime: actual rate {tm[split]['actual_ot_rate']:.1%}; simulated mean P(OT) " +
+                    ", ".join(f"{names[k]} {v:.1%}" for k, v in ots) + ". Simulated possessions per team-game: " +
+                    ", ".join(f"{names[k]} {tm[split][k]['poss_per_team']:.2f}" for k, _ in ots) +
+                    ". Total bias (prediction - actual): " +
+                    ", ".join(f"{names[k]} {v['total_bias']:+.2f}" for k, v in tm[split].items()
+                              if isinstance(v, dict) and "total_bias" in v) + "."]
         bs = tm[split].get("bootstrap_mse_gain_vs_team_model")
         if bs:
             out += ["", "Paired bootstrap over games (2,000 resamples) of the reduction in squared error vs the team model "
@@ -71,8 +96,21 @@ def write_findings(summ: dict | None = None) -> str:
             for k, v in bs.items():
                 out.append(f"* {k.replace('_', ' ')}: {v['mean']:+.2f} (95% CI {v['ci95'][0]:+.2f} to {v['ci95'][1]:+.2f})")
         out.append("")
-    out += [f"Blend weight on the team model (chosen on {summ['tuning_season']} by margin + total RMSE): "
-            f"**{tm['blend_weight']:.2f}**", ""]
+    out += [f"Blend weight on the team model (chosen on {summ['tuning_season']} by margin + total RMSE of the mixture "
+            f"of the team-constrained and bottom-up backtests): **{tm['blend_weight']:.2f}**; the shipped blend "
+            "environment was then backtested with that weight.", ""]
+    ax = summ.get("availability_experiment")
+    if ax:
+        out += [f"## The inactive-list stand-in ({ax['season']}, {ax['n']:,} player-games)", "",
+                "The test seasons' sources have no inactive list, so every season uses who appeared as the stand-in "
+                "for rotation players' availability, which also reveals coach's-decision DNPs. On "
+                f"{ax['season']} the official statuses exist: of {ax['absent_rotation_n']:,} absent rotation player-games "
+                f"in 2021-24, {ax['absent_rotation_status_share'].get('dnp_cd', 0):.1%} were dressed but unused.", "",
+                "| Minutes model | Stand-in (who appeared) | Official inactive list | Difference |", "|---|---:|---:|---:|",
+                f"| Lineups known | {ax['mae_appearance_proxy']:.3f} | {ax['mae_inactive_list']:.3f} | "
+                f"{ax['mae_inactive_list'] - ax['mae_appearance_proxy']:+.3f} |",
+                f"| No lineup information | {ax['mae_appearance_proxy_pre']:.3f} | {ax['mae_inactive_list_pre']:.3f} | "
+                f"{ax['mae_inactive_list_pre'] - ax['mae_appearance_proxy_pre']:+.3f} |", ""]
     co = summ.get("consistency")
     if co:
         out += ["## Internal consistency: adding up independently projected players (test seasons)", "",
@@ -90,18 +128,22 @@ def write_findings(summ: dict | None = None) -> str:
     ab = summ.get("opponent_ablation")
     if ab:
         out += ["## Do matchup (opponent) features help? LightGBM ablation, test seasons", "",
-                "| Stat | MAE with opponent features | MAE without | Gain | 95% CI (game-clustered bootstrap) |",
-                "|---|---:|---:|---:|---|"]
+                "Without opponent: no opponent style factors, the EB expectation with neutral opponent factors, and "
+                "the team-model environment replaced by the team's own season-to-date averages.", "",
+                "| Stat | MAE with opponent information | MAE without | Gain | Gain (% of MAE) | 95% CI (game-clustered bootstrap) |",
+                "|---|---:|---:|---:|---:|---|"]
         for s_, r in ab.items():
             out.append(f"| {s_.upper()} | {r['with_opponent']['mae']:.4f} | {r['without_opponent']['mae']:.4f} | "
-                       f"{r['mae_gain']:+.4f} | {r['mae_gain_ci95'][0]:+.4f} to {r['mae_gain_ci95'][1]:+.4f} |")
+                       f"{r['mae_gain']:+.4f} | {r.get('mae_gain_pct', float('nan')):.2f}% | "
+                       f"{r['mae_gain_ci95'][0]:+.4f} to {r['mae_gain_ci95'][1]:+.4f} |")
         out.append("")
     pa = summ.get("participation")
     if pa and "calibration" in pa:
         c_ = pa["calibration"]
         out += [f"## Selection effects: fringe-player participation ({pa['season']}, {pa['games']} games)", "",
-                f"Fringe players listed pregame: {pa['fringe_rows']:,}; appeared: {pa['fringe_played_share']:.1%} "
-                f"(mean pregame probability {pa['fringe_mean_p_play']:.1%}). Status counts: {pa['fringe_status_counts']}.", "",
+                f"Fringe candidates listed by the pregame rule: {pa['fringe_rows']:,}; appeared: {pa['fringe_played_share']:.1%} "
+                f"(mean simulated probability {pa['fringe_mean_p_play']:.1%}). Status counts: {pa['fringe_status_counts']}. "
+                f"Players added only because they appeared (excluded): {pa.get('fringe_added_because_appeared', 0)}.", "",
                 "| Predicted P(play) | Observed | n |", "|---:|---:|---:|"]
         for pr_, ob, n in zip(c_["pred"], c_["obs"], c_["n"]):
             out.append(f"| {pr_:.2f} | {ob:.2f} | {n} |")

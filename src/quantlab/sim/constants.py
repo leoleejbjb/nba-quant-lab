@@ -1,7 +1,7 @@
 """Structural constants of the possession simulator, estimated from pre-test seasons only.
 
-All quantities come from 2021-22 .. 2023-24 (history + tuning seasons); the
-2024-25 and 2025-26 test seasons are never read here.
+All quantities come from 2021-22 .. 2023-24 (two history seasons and the 2023-24 tuning season);
+the 2024-25 and 2025-26 test seasons are never read here.
 
 * rotation templates: P(on court | minute of game, starter, projected-minutes tier)
 * garbage time: starters' on-court rate in Q4 as a function of |margin| and time left,
@@ -9,6 +9,8 @@ All quantities come from 2021-22 .. 2023-24 (history + tuning seasons); the
 * possession time: duration model ``a + b * n_oreb`` and the Gamma shape of the base part
 * league event rates not tied to a player's usage: team rebounds, non-FT defensive fouls,
   technical free throws, late-game intentional fouling
+* end of games: possession durations by score and time left, last-shot holds, shot selection and
+  accuracy in the final 24 seconds
 * closing: P(on court) in the last 4 minutes of close games by minutes rank
 """
 
@@ -47,48 +49,130 @@ def slot_occupancy(stints: pd.DataFrame) -> pd.DataFrame:
     return o.groupby(["game_id", "person_id"], sort=False).sum().reset_index()
 
 
+LATE_LEAD_BUCKETS = ((1, 3), (4, 6), (7, 9), (10, 99))
+
+
+def _lead_group(lead: np.ndarray) -> np.ndarray:
+    """0 leading, 1 tied, 2 down 1-3, 3 down 4+ (offense perspective)."""
+    return np.where(lead >= 1, 0, np.where(lead == 0, 1, np.where(lead >= -3, 2, 3)))
+
+
+def _lead_index(lead: np.ndarray) -> np.ndarray:
+    """0 leading, 1 tied, 2 down 1, 3 down 2, 4 down 3, 5 down 4+ (for shot selection)."""
+    return np.where(lead >= 1, 0, np.where(lead >= -3, 1 - lead, 5))
+
+
 def late_game_fouling(poss: pd.DataFrame) -> dict:
-    """P(a possession of the *leading* team includes a non-and-one FT trip) in the final minute of regulation
-    by lead size, vs. the same rate earlier in the 4th quarter (the excess is intentional fouling)."""
-    out_rows = []
-    for s in CONST_SEASONS:
-        ev = pd.read_parquet(PATHS.staged(s) / "events.parquet",
-                             columns=["game_id", "period", "elapsed_s", "action_type", "sub_type", "descriptor",
-                                      "team_id", "score_home", "score_away"])
-        g = pd.read_parquet(PATHS.processed(s) / "games.parquet")[["game_id", "home_team_id"]]
-        ev = ev[ev["period"] == 4]
-        trips = ev[(ev["action_type"] == "freethrow") & ev["sub_type"].isin(["1 of 2", "1 of 3"]) &
-                   (ev["descriptor"] != "technical")][["game_id", "elapsed_s", "team_id"]]
-        ps = poss[(poss["game_id"].isin(g["game_id"])) & (poss["period"] == 4)].copy()
-        ps = ps.merge(g, on="game_id")
-        # running score at possession start
-        ev = ev.sort_values(["game_id", "elapsed_s"])
-        res = []
-        for gid, pg_ in ps.groupby("game_id"):
-            e = ev[ev["game_id"] == gid]
-            if e.empty:
-                continue
-            idx = np.searchsorted(e["elapsed_s"].to_numpy(), pg_["start_s"].to_numpy(), side="right") - 1
-            idx = np.clip(idx, 0, len(e) - 1)
-            sh, sa = e["score_home"].to_numpy()[idx], e["score_away"].to_numpy()[idx]
-            home_off = (pg_["offense_team_id"] == pg_["home_team_id"]).to_numpy()
-            lead = np.where(home_off, sh - sa, sa - sh)
-            t = trips[trips["game_id"] == gid]
-            has = np.zeros(len(pg_), dtype=bool)
-            for j, (st_, en_, off) in enumerate(zip(pg_["start_s"], pg_["end_s"], pg_["offense_team_id"])):
-                has[j] = ((t["elapsed_s"] >= st_) & (t["elapsed_s"] <= en_) & (t["team_id"] == off)).any()
-            res.append(pd.DataFrame({"start_s": pg_["start_s"].to_numpy(), "lead": lead, "trip": has}))
-        out_rows.append(pd.concat(res))
-    d = pd.concat(out_rows)
+    """P(a possession of the *leading* team includes a non-and-one FT trip) late in the 4th quarter by lead size
+    and time left, vs. the same rate earlier in the 4th quarter (the excess is intentional fouling).
+
+    Windows: the final minute (``leading``, kept for reference) and its two parts, 24-60 s left and the final 24 s
+    (``leading_by_window``). The lead is the offense's lead before the possession's first event (its own points
+    excluded) and the possession starts when the previous one ended (``possessions.start_s``), matching the
+    simulator, which decides on intentional fouls at the start of a possession from the score at that moment."""
+    ps = poss[poss["period"] == 4]
+    d = pd.DataFrame({"start_s": ps["start_s"].to_numpy(), "lead": ps["lead_start"].to_numpy(),
+                      "trip": (ps["n_trips"] > 0).to_numpy()})
     late = d[d["start_s"] >= 2820]
     early = d[(d["start_s"] >= 2160) & (d["start_s"] < 2700)]
     base = float(early["trip"].mean())
-    rates = {}
-    for lo, hi in ((1, 3), (4, 6), (7, 9), (10, 99)):
+    rates, by_window = {}, {"24-60": {}, "0-24": {}}
+    for lo, hi in LATE_LEAD_BUCKETS:
         x = late[(late["lead"] >= lo) & (late["lead"] <= hi)]
         rates[f"{lo}-{hi}"] = {"p_trip": float(x["trip"].mean()), "n": int(len(x))}
+        for w, (a, b) in (("24-60", (2820, 2856)), ("0-24", (2856, 2881))):
+            y = x[(x["start_s"] >= a) & (x["start_s"] < b)]
+            by_window[w][f"{lo}-{hi}"] = {"p_trip": float(y["trip"].mean()) if len(y) else base, "n": int(len(y))}
     tie = late[late["lead"] <= 0]
-    return {"baseline_p_trip_q4": base, "leading": rates, "not_leading_p_trip": float(tie["trip"].mean())}
+    return {"baseline_p_trip_q4": base, "leading": rates, "leading_by_window": by_window,
+            "not_leading_p_trip": float(tie["trip"].mean())}
+
+
+def end_game(poss: pd.DataFrame) -> dict:
+    """End-of-game behaviour in the 4th quarter and overtime (pre-test seasons):
+
+    * ``dur``: mean possession duration (s) of possessions *not* ending in free throws, by time left
+      (60-120 s, 24-60 s) and score (leading / tied / down 1-3 / down 4+): leading teams run the clock,
+      trailing teams hurry;
+    * ``hold``: share of possessions starting with 4-24 s left that end at the buzzer (last shot), tied and
+      down 1-3; ``quick_dur``: mean duration of the others;
+    * ``three_share``: share of field-goal attempts that are threes with 4-24 s and 0-4 s left, by lead
+      (leading / tied / down 1 / down 2 / down 3 / down 4+);
+    * ``fg``: make rates with 0-4 s left (2PA, 3PA) and of threes with 4-24 s left (late, contested shots).
+    """
+    pend = np.where(poss["period"] <= 4, 2880.0, 2880.0 + 300.0 * (poss["period"] - 4))
+    p = poss[poss["period"] >= 4].copy()
+    p["pend"] = pend[poss["period"].to_numpy() >= 4]
+    p["tleft"] = p["pend"] - p["start_s"]
+    p["dur"] = p["end_s"] - p["start_s"]
+    p["grp"] = _lead_group(p["lead_start"].to_numpy())
+    out: dict = {"groups": ["leading", "tied", "down 1-3", "down 4+"]}
+    nf = p[p["n_trips"] == 0]
+    dur = {}
+    for w, (lo, hi) in (("60-120", (60, 120)), ("24-60", (24, 60))):
+        x = nf[(nf["tleft"] > lo) & (nf["tleft"] <= hi)]
+        dur[w] = [float(x.loc[x["grp"] == k, "dur"].mean()) for k in range(4)]
+    out["dur"] = dur
+    w3 = p[(p["tleft"] > 4) & (p["tleft"] <= 24) & (p["n_trips"] == 0)]
+    buzz = w3["end_s"] >= w3["pend"] - 3.0
+    out["hold"] = {"tied": float(buzz[w3["grp"] == 1].mean()), "down_1_3": float(buzz[w3["grp"] == 2].mean())}
+    out["quick_dur"] = float(w3.loc[~buzz & (w3["grp"] >= 2), "dur"].mean())
+    # shot selection and accuracy from the events
+    shots = []
+    for s in CONST_SEASONS:
+        ev = pd.read_parquet(PATHS.staged(s) / "events.parquet",
+                             columns=["game_id", "period", "elapsed_s", "action_type", "shot_result", "points",
+                                      "team_id", "score_home", "score_away"])
+        g = pd.read_parquet(PATHS.processed(s) / "games.parquet")[["game_id", "home_team_id"]]
+        ev = ev[(ev["period"] >= 4) & ev["action_type"].isin(["2pt", "3pt"])].merge(g, on="game_id")
+        tl = np.where(ev["period"] == 4, 2880.0, 2880.0 + 300.0 * (ev["period"] - 4)) - ev["elapsed_s"]
+        ev = ev[tl <= 600].assign(tleft=tl[tl <= 600])
+        home = ev["team_id"] == ev["home_team_id"]
+        made = ev["shot_result"] == "Made"
+        after = np.where(home, ev["score_home"] - ev["score_away"], ev["score_away"] - ev["score_home"])
+        shots.append(pd.DataFrame({"tleft": ev["tleft"].to_numpy(), "three": (ev["action_type"] == "3pt").to_numpy(),
+                                   "made": made.to_numpy(),
+                                   "lead": after - np.where(made, ev["points"].fillna(0), 0)}))
+    sh_all = pd.concat(shots, ignore_index=True)
+    # late-game make-rate shifts (logit) by time left x score group x shot type, relative to the same group
+    # with 2-10 minutes left in the 4th quarter / overtime (shrunk toward 0 with 50 pseudo-attempts)
+    sh_all["grp"] = _lead_group(sh_all["lead"].to_numpy())
+    base_w = sh_all[sh_all["tleft"] > 120]
+    late_off = []
+    for lo, hi in ((60, 120), (24, 60), (4, 24)):
+        x = sh_all[(sh_all["tleft"] > lo) & (sh_all["tleft"] <= hi)]
+        rows = []
+        for grp in range(4):
+            cell = []
+            for three in (False, True):
+                b = base_w[(base_w["grp"] == grp) & (base_w["three"] == three)]["made"].mean()
+                y = x[(x["grp"] == grp) & (x["three"] == three)]["made"]
+                r = (y.sum() + 50 * b) / (len(y) + 50)
+                cell.append(float(np.log(r / (1 - r)) - np.log(b / (1 - b))))
+            rows.append(cell)
+        late_off.append(rows)
+    out["late_make_logit"] = late_off        # [window 60-120 / 24-60 / 4-24][group][2PA, 3PA]
+    sh = sh_all[sh_all["tleft"] <= 24].copy()
+    sh["li"] = _lead_index(sh["lead"].to_numpy())
+    out["three_share"] = {w: [float(x.loc[x["li"] == k, "three"].mean()) for k in range(6)]
+                          for w, x in (("4-24", sh[sh["tleft"] > 4]), ("0-4", sh[sh["tleft"] <= 4]))}
+    out["lead_index"] = ["leading", "tied", "down 1", "down 2", "down 3", "down 4+"]
+    w4 = sh[sh["tleft"] <= 4]
+    out["fg"] = {"heave2": float(w4.loc[~w4["three"], "made"].mean()), "heave3": float(w4.loc[w4["three"], "made"].mean()),
+                 "late3": float(sh.loc[(sh["tleft"] > 4) & sh["three"], "made"].mean()),
+                 "late2": float(sh.loc[(sh["tleft"] > 4) & ~sh["three"], "made"].mean())}
+    # final-seconds make rates by score situation and shot type (shrunk toward the pooled rate, 20 attempts):
+    # a contested last shot in a close game goes in far less often than a garbage-time layup
+    k = 20.0
+    heave = []
+    for li in range(6):
+        row = []
+        for three, pooled in ((False, out["fg"]["heave2"]), (True, out["fg"]["heave3"])):
+            x = w4[(w4["li"] == li) & (w4["three"] == three)]
+            row.append(float((x["made"].sum() + k * pooled) / (len(x) + k)))
+        heave.append(row)
+    out["heave_fg"] = heave          # [lead index][2PA, 3PA]
+    return out
 
 
 def compute_constants(log=print) -> dict:
@@ -183,6 +267,7 @@ def compute_constants(log=print) -> dict:
     c["tech_fta_per_team_game"] = float(pg["fta_tech"].sum() / len(tg))
     del pf_ft, plays
     c["late_game"] = late_game_fouling(poss)
+    c["end_game"] = end_game(poss)
     log(f"[sim constants] templates {len(c['templates'])}, poss time a={a:.2f}s b={b:.2f}s/OREB shape={shape:.2f}, "
         f"team reb share {c['team_reb_share']:.3f}, non-FT def fouls/play {c['nonft_def_fouls_per_opp_play']:.4f}, "
         f"tech FTA/team-game {c['tech_fta_per_team_game']:.3f}")

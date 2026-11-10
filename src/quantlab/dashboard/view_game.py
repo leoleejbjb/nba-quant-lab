@@ -78,7 +78,9 @@ def render() -> None:
                 help="Negative = home team favoured. 80% interval of the margin: "
                      f"{np.percentile(mg, 10):+.0f} to {np.percentile(mg, 90):+.0f}")
     c[3].metric("Total", f"{tot.mean():.1f}", help=f"80% interval {np.percentile(tot, 10):.0f}–{np.percentile(tot, 90):.0f}")
-    c[4].metric("Overtime", style.pct(float((res.n_ot > 0).mean())))
+    c[4].metric("Overtime", style.pct(float((res.n_ot > 0).mean())),
+                help="Share of simulated games that go to overtime. The simulator understates overtime: regulation "
+                     "ties are rarer than in real games (see the Validation page).")
     tp = pr.store.tp.loc[gid]
     st.caption(f"{pd.Timestamp(g['game_date']):%a %b %d, %Y} · {res.n:,} simulated games · environment: "
                f"{st.session_state['environment']} · team model: spread {-tp['exp_margin']:+.1f}, total "

@@ -7,14 +7,17 @@ rate model, not the minutes model:
 * ``season_avg``   season-to-date per-game average (previous season early on)
 * ``l10``          last 10 games average
 * ``per_min``      season-to-date per-minute rate x projected minutes
-* ``opp_adj``      ``per_min`` x the opponent's stat-specific defensive factor
+* ``opp_adj``      ``per_min`` x the opponent's stat-specific defensive factor (points: the team's
+                   expected efficiency against this opponent relative to the league)
 * ``eb``           closed-form expectation from the empirical-Bayes per-possession rates
                    (the simulator's inputs, without lineup interactions or game dynamics)
 * ``gbm``          LightGBM Poisson model on EB rates, recent per-minute rates, projected minutes,
                    pace, opponent factors, teammate absences, rest, home (trained on earlier seasons)
 
 Distributions for the non-simulation models: negative binomial around the point forecast with a
-dispersion fitted on the training season (method of moments in mean bins).
+mean-dependent dispersion fitted on the tuning season (method of moments within deciles of the
+predicted mean; each prediction takes the size ``r`` of its bin). A single pooled ``r`` is far too
+narrow for bench players and too wide for stars (r ranges ~15x across the deciles).
 """
 
 from __future__ import annotations
@@ -92,8 +95,13 @@ def add_model_inputs(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-def eb_expectations(d: pd.DataFrame) -> pd.DataFrame:
-    """Closed-form expected box score from EB per-possession rates and projected minutes."""
+def eb_expectations(d: pd.DataFrame, neutral_opponent: bool = False) -> pd.DataFrame:
+    """Closed-form expected box score from EB per-possession rates and projected minutes.
+    ``neutral_opponent``: every opponent defensive factor set to 1 (no matchup information)."""
+    if neutral_opponent:
+        d = d.copy()
+        for c in [c for c in d.columns if c.startswith("opp_def_")]:
+            d[c] = 1.0
     m = d["pred_gbm"].clip(lower=0)
     poss_on = m / 48.0 * d["pace"].fillna(99)
     plays_on = poss_on * PLAYS_PER_POSS
@@ -134,7 +142,7 @@ OPP_FACTOR = {"pts": None, "reb": "opp_def_oreb_allowed", "ast": "opp_def_ast_al
 def baseline_predictions(d: pd.DataFrame) -> dict:
     preds = {}
     m = d["pred_gbm"].clip(lower=0)
-    lg_ppp = d.groupby("season")["opp_ppp"].transform("mean")
+    lg_ppp = d.groupby("season")["team_ppp"].transform("mean")
     for s_ in STATS:
         sa = d[f"sa_{s_}"].where(d["sa_n"] >= 3).fillna(d[f"prev_{s_}"]).fillna(d[f"sa_{s_}"]).fillna(0.0)
         l10 = d[f"l10_{s_}"].fillna(sa)
@@ -143,7 +151,8 @@ def baseline_predictions(d: pd.DataFrame) -> dict:
         per_min = rate * m
         fac = d[OPP_FACTOR[s_]].fillna(1.0) if OPP_FACTOR[s_] else None
         if s_ in ("pts", "fga", "pra"):
-            fac = (d["opp_ppp"] / lg_ppp).fillna(1.0) if s_ != "fga" else 1.0
+            # the player's team's expected efficiency against this opponent, relative to the league
+            fac = (d["team_ppp"] / lg_ppp).fillna(1.0) if s_ != "fga" else 1.0
         preds[s_] = {"season_avg": sa.to_numpy(), "l10": l10.to_numpy(), "per_min": per_min.to_numpy(),
                      "opp_adj": (per_min * fac).to_numpy() if fac is not None else per_min.to_numpy()}
     eb = eb_expectations(d)
@@ -178,7 +187,7 @@ def gbm_predictions(d: pd.DataFrame, train_seasons_for: dict, log=print) -> dict
 
 
 def nb_dispersion(mu: np.ndarray, y: np.ndarray) -> float:
-    """Method-of-moments NB size r (var = mu + mu^2 / r) pooled over mean bins."""
+    """Method-of-moments NB size r (var = mu + mu^2 / r), one value for all predictions."""
     ok = np.isfinite(mu) & (mu > 0.05)
     mu, y = mu[ok], y[ok]
     excess = ((y - mu) ** 2 - mu).sum()
@@ -186,8 +195,27 @@ def nb_dispersion(mu: np.ndarray, y: np.ndarray) -> float:
     return float(np.clip(r, 0.5, 1e4))
 
 
-def nb_scores(mu: np.ndarray, r: float, y: np.ndarray, rng) -> dict:
+class BinnedDispersion:
+    """Mean-dependent NB size: method of moments within quantile bins of the predicted mean (fitted on the
+    tuning season); a prediction takes the size of the bin its mean falls in."""
+
+    def __init__(self, mu: np.ndarray, y: np.ndarray, n_bins: int = 10):
+        ok = np.isfinite(mu) & np.isfinite(y) & (mu > 0.05)
+        mu, y = mu[ok], y[ok]
+        self.edges = np.unique(np.quantile(mu, np.linspace(0, 1, n_bins + 1)))
+        b = np.clip(np.searchsorted(self.edges, mu, side="right") - 1, 0, len(self.edges) - 2)
+        self.r = np.array([nb_dispersion(mu[b == k], y[b == k]) if (b == k).sum() > 50 else nb_dispersion(mu, y)
+                           for k in range(len(self.edges) - 1)])
+
+    def __call__(self, mu: np.ndarray) -> np.ndarray:
+        b = np.clip(np.searchsorted(self.edges, np.asarray(mu), side="right") - 1, 0, len(self.r) - 1)
+        return self.r[b]
+
+
+def nb_scores(mu: np.ndarray, r, y: np.ndarray, rng) -> dict:
+    """CRPS, randomized PIT, log score and 80% central-interval coverage of NB(mu, r); ``r`` scalar or per row."""
     mu = np.clip(mu, 1e-3, None)
+    r = np.broadcast_to(np.asarray(r, dtype=float), mu.shape)
     p = r / (r + mu)
     ymax = int(max(y.max(), np.percentile(mu, 99.9) * 4 + 20))
     k = np.arange(ymax + 1)
@@ -197,7 +225,7 @@ def nb_scores(mu: np.ndarray, r: float, y: np.ndarray, rng) -> dict:
     cov80 = np.zeros(len(mu), dtype=bool)
     for i0 in range(0, len(mu), 5000):
         sl = slice(i0, i0 + 5000)
-        pm = sps.nbinom.pmf(k[None, :], r, p[sl, None])
+        pm = sps.nbinom.pmf(k[None, :], r[sl, None], p[sl, None])
         cdf = np.cumsum(pm, axis=1)
         yy = y[sl].astype(int)
         crps[sl] = ((cdf - (k[None, :] >= yy[:, None])) ** 2).sum(axis=1)
@@ -211,22 +239,54 @@ def nb_scores(mu: np.ndarray, r: float, y: np.ndarray, rng) -> dict:
     return {"crps": crps, "pit": pit, "logp": logp, "cov80": cov80}
 
 
+def own_team_environment(d: pd.DataFrame) -> pd.DataFrame:
+    """Opponent-free stand-ins for the team-model quantities: the team's average expected efficiency, pace and
+    margin over its *previous* games of the season (pregame; today's opponent plays no part)."""
+    tp = pd.read_parquet(PATHS.models / "team_predictions.parquet")
+    rows = []
+    for side, other in (("home", "away"), ("away", "home")):
+        x = tp[["game_id", "game_date", "season", f"{side}_team_id", f"ppp_{side}", "pace", "exp_margin"]].copy()
+        x.columns = ["game_id", "game_date", "season", "team_id", "team_ppp", "pace", "team_margin"]
+        x["team_ppp"] = x["team_ppp"] / 100
+        if side == "away":
+            x["team_margin"] = -x["team_margin"]
+        rows.append(x)
+    t = pd.concat(rows).sort_values(["team_id", "game_date"])
+    g = t.groupby(["team_id", "season"])
+    out = t[["game_id", "team_id"]].copy()
+    for c in ("team_ppp", "pace", "team_margin"):
+        prev = g[c].transform(lambda v: v.shift(1).expanding().mean())
+        out[f"own_{c}"] = prev.fillna(t.groupby("season")[c].transform("mean"))
+    return d[["game_id", "team_id"]].merge(out, on=["game_id", "team_id"], how="left")
+
+
 def opponent_ablation(log=print) -> dict:
     """Do opponent / matchup features improve player projections out of sample? LightGBM with and without
-    every opponent feature (team style factors, opponent efficiency), same training protocol, test seasons."""
+    every piece of opponent information, same training protocol, test seasons.
+
+    Without opponent: no opponent defensive factors, the closed-form EB expectation recomputed with neutral
+    opponent factors, and the team-model environment (team PPP, opponent PPP, expected margin, pace - all of
+    which contain the opponent's ratings) replaced by the team's own season-to-date averages. The player's
+    own team's style factors (``own_off_*``) are kept in both variants."""
     from ..config import TEST_SEASONS, TUNING_SEASON
     df = load_frame()
     seasons = [TUNING_SEASON, *TEST_SEASONS]
     d = add_model_inputs(df[df["played"] & df["season"].isin(seasons)].copy()).reset_index(drop=True)
     eb = eb_expectations(d)
+    eb0 = eb_expectations(d, neutral_opponent=True)
+    own = own_team_environment(d)
     rcols = [c for c in d.columns if c.startswith("r_")]
-    ocols = [c for c in d.columns if c.startswith("opp_def_") or c.startswith("own_off_")]
+    opp_cols = [c for c in d.columns if c.startswith("opp_def_")]
+    own_cols = [c for c in d.columns if c.startswith("own_off_")]
+    env_cols = ["pace", "team_ppp", "opp_ppp", "team_margin"]
+    base_cols = [c for c in GBM_FEATURES if c not in env_cols] + rcols + own_cols
     plan = {TEST_SEASONS[0]: [TUNING_SEASON], TEST_SEASONS[1]: [TUNING_SEASON, TEST_SEASONS[0]]}
     out = {}
     for s_ in ["pts", "reb", "ast", "fg3m", "stl", "blk", "tov"]:
-        base_cols = GBM_FEATURES + rcols
-        X_full = pd.concat([d[base_cols + ocols].astype(float), eb[[s_]].rename(columns={s_: "eb_exp"})], axis=1)
-        X_no = X_full.drop(columns=ocols + ["opp_ppp"])
+        X_full = pd.concat([d[base_cols + env_cols + opp_cols].astype(float),
+                            eb[[s_]].rename(columns={s_: "eb_exp"})], axis=1)
+        X_no = pd.concat([d[base_cols].astype(float), own[["own_team_ppp", "own_pace", "own_team_margin"]],
+                          eb0[[s_]].rename(columns={s_: "eb_exp"})], axis=1)
         y = d[s_].astype(float)
         res = {}
         test_rows = d["season"].isin(list(plan)).to_numpy()
@@ -240,18 +300,21 @@ def opponent_ablation(log=print) -> dict:
             res[name] = {"mae": float(np.abs(e).mean()), "rmse": float(np.sqrt((e ** 2).mean()))}
             res[f"_err_{name}"] = e
         e1, e0 = res.pop("_err_with_opponent"), res.pop("_err_without_opponent")
-        diff = np.abs(e0) - np.abs(e1)                       # > 0: opponent features help
+        diff = np.abs(e0) - np.abs(e1)                       # > 0: opponent information helps
         rng = np.random.default_rng(0)
         g = d["game_id"].to_numpy()[test_rows]               # cluster bootstrap by game
-        uniq = np.unique(g)
-        idx = {u: np.flatnonzero(g == u) for u in uniq}
+        uniq, inv = np.unique(g, return_inverse=True)
+        sums = np.bincount(inv, weights=diff)
+        cnts = np.bincount(inv)
         boots = []
-        for _ in range(300):
-            pick = rng.choice(uniq, len(uniq))
-            boots.append(np.concatenate([diff[idx[u]] for u in pick]).mean())
+        for _ in range(1000):
+            pick = rng.integers(0, len(uniq), len(uniq))
+            boots.append(sums[pick].sum() / cnts[pick].sum())
         res["mae_gain"] = float(diff.mean())
+        res["mae_gain_pct"] = float(diff.mean() / res["with_opponent"]["mae"] * 100)
         res["mae_gain_ci95"] = [float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))]
         out[s_] = res
         log(f"[ablation] {s_}: MAE with {res['with_opponent']['mae']:.4f} without {res['without_opponent']['mae']:.4f} "
-            f"gain {res['mae_gain']:+.4f} CI {res['mae_gain_ci95'][0]:+.4f}..{res['mae_gain_ci95'][1]:+.4f}")
+            f"gain {res['mae_gain']:+.4f} ({res['mae_gain_pct']:.2f}%) CI {res['mae_gain_ci95'][0]:+.4f}.."
+            f"{res['mae_gain_ci95'][1]:+.4f}")
     return out
