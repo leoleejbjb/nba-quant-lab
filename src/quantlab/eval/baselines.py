@@ -209,3 +209,49 @@ def nb_scores(mu: np.ndarray, r: float, y: np.ndarray, rng) -> dict:
         q90 = (cdf < 0.9).sum(axis=1)
         cov80[sl] = (yy >= q10) & (yy <= q90)
     return {"crps": crps, "pit": pit, "logp": logp, "cov80": cov80}
+
+
+def opponent_ablation(log=print) -> dict:
+    """Do opponent / matchup features improve player projections out of sample? LightGBM with and without
+    every opponent feature (team style factors, opponent efficiency), same training protocol, test seasons."""
+    from ..config import TEST_SEASONS, TUNING_SEASON
+    df = load_frame()
+    seasons = [TUNING_SEASON, *TEST_SEASONS]
+    d = add_model_inputs(df[df["played"] & df["season"].isin(seasons)].copy()).reset_index(drop=True)
+    eb = eb_expectations(d)
+    rcols = [c for c in d.columns if c.startswith("r_")]
+    ocols = [c for c in d.columns if c.startswith("opp_def_") or c.startswith("own_off_")]
+    plan = {TEST_SEASONS[0]: [TUNING_SEASON], TEST_SEASONS[1]: [TUNING_SEASON, TEST_SEASONS[0]]}
+    out = {}
+    for s_ in ["pts", "reb", "ast", "fg3m", "stl", "blk", "tov"]:
+        base_cols = GBM_FEATURES + rcols
+        X_full = pd.concat([d[base_cols + ocols].astype(float), eb[[s_]].rename(columns={s_: "eb_exp"})], axis=1)
+        X_no = X_full.drop(columns=ocols + ["opp_ppp"])
+        y = d[s_].astype(float)
+        res = {}
+        test_rows = d["season"].isin(list(plan)).to_numpy()
+        for name, X in (("with_opponent", X_full), ("without_opponent", X_no)):
+            pred = np.full(len(d), np.nan)
+            for te_s, tr_s in plan.items():
+                tr, te = d["season"].isin(tr_s).to_numpy(), (d["season"] == te_s).to_numpy()
+                m = lgb.train(GBM_PARAMS, lgb.Dataset(X[tr].astype(np.float32), label=y[tr]), num_boost_round=500)
+                pred[te] = m.predict(X[te].astype(np.float32))
+            e = pred[test_rows] - y.to_numpy()[test_rows]
+            res[name] = {"mae": float(np.abs(e).mean()), "rmse": float(np.sqrt((e ** 2).mean()))}
+            res[f"_err_{name}"] = e
+        e1, e0 = res.pop("_err_with_opponent"), res.pop("_err_without_opponent")
+        diff = np.abs(e0) - np.abs(e1)                       # > 0: opponent features help
+        rng = np.random.default_rng(0)
+        g = d["game_id"].to_numpy()[test_rows]               # cluster bootstrap by game
+        uniq = np.unique(g)
+        idx = {u: np.flatnonzero(g == u) for u in uniq}
+        boots = []
+        for _ in range(300):
+            pick = rng.choice(uniq, len(uniq))
+            boots.append(np.concatenate([diff[idx[u]] for u in pick]).mean())
+        res["mae_gain"] = float(diff.mean())
+        res["mae_gain_ci95"] = [float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))]
+        out[s_] = res
+        log(f"[ablation] {s_}: MAE with {res['with_opponent']['mae']:.4f} without {res['without_opponent']['mae']:.4f} "
+            f"gain {res['mae_gain']:+.4f} CI {res['mae_gain_ci95'][0]:+.4f}..{res['mae_gain_ci95'][1]:+.4f}")
+    return out

@@ -73,6 +73,39 @@ def write_findings(summ: dict | None = None) -> str:
         out.append("")
     out += [f"Blend weight on the team model (chosen on {summ['tuning_season']} by margin + total RMSE): "
             f"**{tm['blend_weight']:.2f}**", ""]
+    co = summ.get("consistency")
+    if co:
+        out += ["## Internal consistency: adding up independently projected players (test seasons)", "",
+                "| Player model | Mean gap vs team model | MAE gap vs team model | Team-points RMSE of the sum | "
+                "Implied SD if independent | Realised SD | 80% coverage if independent |",
+                "|---|---:|---:|---:|---:|---:|---:|"]
+        for m in ("eb", "gbm"):
+            if m in co:
+                r = co[m]
+                out.append(f"| {LABEL[m]} | {r['mean_gap_vs_team_model']:+.2f} | {r['mae_gap_vs_team_model']:.2f} | "
+                           f"{r['rmse_team_points_from_sum']:.2f} | {r['implied_sd_if_independent']:.2f} | "
+                           f"{r['realised_sd']:.2f} | {r['coverage80_if_independent']:.1%} |")
+        out += ["", f"Team model team-points RMSE on the same games: {co['team_model_rmse_team_points']:.2f}. "
+                "The simulator's team score equals the sum of its player points in every simulated game.", ""]
+    ab = summ.get("opponent_ablation")
+    if ab:
+        out += ["## Do matchup (opponent) features help? LightGBM ablation, test seasons", "",
+                "| Stat | MAE with opponent features | MAE without | Gain | 95% CI (game-clustered bootstrap) |",
+                "|---|---:|---:|---:|---|"]
+        for s_, r in ab.items():
+            out.append(f"| {s_.upper()} | {r['with_opponent']['mae']:.4f} | {r['without_opponent']['mae']:.4f} | "
+                       f"{r['mae_gain']:+.4f} | {r['mae_gain_ci95'][0]:+.4f} to {r['mae_gain_ci95'][1]:+.4f} |")
+        out.append("")
+    pa = summ.get("participation")
+    if pa and "calibration" in pa:
+        c_ = pa["calibration"]
+        out += [f"## Selection effects: fringe-player participation ({pa['season']}, {pa['games']} games)", "",
+                f"Fringe players listed pregame: {pa['fringe_rows']:,}; appeared: {pa['fringe_played_share']:.1%} "
+                f"(mean pregame probability {pa['fringe_mean_p_play']:.1%}). Status counts: {pa['fringe_status_counts']}.", "",
+                "| Predicted P(play) | Observed | n |", "|---:|---:|---:|"]
+        for pr_, ob, n in zip(c_["pred"], c_["obs"], c_["n"]):
+            out.append(f"| {pr_:.2f} | {ob:.2f} | {n} |")
+        out.append("")
     c = summ.get("cost", {})
     if "us_per_game" in c:
         out += ["## Computational cost", "",

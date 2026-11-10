@@ -150,7 +150,8 @@ def cmd_project(a) -> None:
 
 def cmd_dashboard(a) -> None:
     app = Path(__file__).resolve().parent / "dashboard" / "app.py"
-    cmd = [sys.executable, "-m", "streamlit", "run", str(app), "--server.port", str(a.port), "--server.headless", "true"]
+    cmd = [sys.executable, "-m", "streamlit", "run", str(app), "--server.port", str(a.port), "--server.headless", "true",
+           "--theme.primaryColor", "#2a78d6", "--browser.gatherUsageStats", "false"]
     subprocess.run(cmd, check=False)
 
 

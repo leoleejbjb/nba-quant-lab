@@ -18,6 +18,7 @@ dependencies = [
   "scikit-learn>=1.4",
   "lightgbm>=4.3",
   "statsmodels>=0.14",
+  "numba>=0.60",
   "plotly>=5.20",
   "streamlit>=1.37",
 ]

@@ -237,6 +237,10 @@ def run_report(log=print) -> dict:
         summary[f"minutes_{name}"] = minutes_comparison(seasons).to_dict("records")
         log(f"[report] player comparison {name}: {len(pc)} rows")
     summary["teams"] = team_comparison(TUNING_SEASON, TEST_SEASONS)
+    summary["consistency"] = consistency_analysis()
+    abl = PATHS.backtest / "opponent_ablation.json"
+    if abl.exists():
+        summary["opponent_ablation"] = json.loads(abl.read_text())
     try:
         summary["participation"] = participation_analysis()
     except Exception as e:      # pragma: no cover
@@ -281,3 +285,38 @@ def participation_analysis(season: str = TUNING_SEASON, n_games: int = 600, seed
             "calibration": cal.reset_index(drop=True).to_dict("list"),
             "season_status_counts": {k: int(v) for k, v in av_counts.items()},
             "rotation_rows": int(d["rotation"].sum())}
+
+
+def consistency_analysis(seasons=TEST_SEASONS) -> dict:
+    """What happens when independently projected player statistics are added up?
+
+    For each team-game: the sum of independent per-player point projections vs the actual team score and vs the team
+    model's expectation, and the team-score uncertainty implied by treating players' distributions as independent
+    (sum of negative-binomial variances, dispersion fitted on the tuning season) vs the realised error. The possession
+    simulator's team score is consistent with its player box scores by construction (asserted in every game)."""
+    base = pd.read_parquet(PATHS.backtest / "baseline_predictions.parquet")
+    tune = base[base["season"] == TUNING_SEASON]
+    test = base[base["season"].isin(list(seasons))].copy()
+    tg = pd.read_parquet(PATHS.processed("all") / "team_games.parquet", columns=["game_id", "team_id", "pts", "is_home"])
+    tp = pd.read_parquet(PATHS.models / "team_predictions.parquet")[["game_id", "exp_home_pts", "exp_away_pts"]]
+    tg = tg.merge(tp, on="game_id")
+    tg["team_model"] = np.where(tg["is_home"], tg["exp_home_pts"], tg["exp_away_pts"])
+    out = {}
+    for m in ("eb", "gbm"):
+        col = f"pts__{m}"
+        if test[col].isna().all():
+            continue
+        r = nb_dispersion(tune[f"pts__eb"].to_numpy(float), tune["pts"].to_numpy(float))
+        test["_var"] = test[col] + test[col] ** 2 / r
+        g = test.groupby(["game_id", "team_id"]).agg(sum_pred=(col, "sum"), sum_var=("_var", "sum")).reset_index()
+        g = g.merge(tg, on=["game_id", "team_id"])
+        err = g["pts"] - g["sum_pred"]
+        out[m] = {"team_games": int(len(g)), "mean_gap_vs_team_model": float((g["sum_pred"] - g["team_model"]).mean()),
+                  "mae_gap_vs_team_model": float((g["sum_pred"] - g["team_model"]).abs().mean()),
+                  "rmse_team_points_from_sum": float(np.sqrt((err ** 2).mean())),
+                  "implied_sd_if_independent": float(np.sqrt(g["sum_var"]).mean()),
+                  "realised_sd": float(err.std()),
+                  "coverage80_if_independent": float((np.abs(err) <= 1.2816 * np.sqrt(g["sum_var"])).mean())}
+    t = tg.merge(test[["game_id"]].drop_duplicates(), on="game_id")
+    out["team_model_rmse_team_points"] = float(np.sqrt(((t["pts"] - t["team_model"]) ** 2).mean()))
+    return out
