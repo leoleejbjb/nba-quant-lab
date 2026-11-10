@@ -124,6 +124,46 @@ def render() -> None:
                        f"{k.replace('_', ' ')} {v['mean']:+.2f} [{v['ci95'][0]:+.2f}, {v['ci95'][1]:+.2f}]"
                        for k, v in bs.items()))
     st.caption(f"Blend weight on the team model, chosen on the tuning season: {summ['teams']['blend_weight']:.2f}.")
+    co = summ.get("consistency")
+    if co:
+        st.subheader("Why a joint simulation: adding up independent player projections")
+        rows = []
+        for m, name in (("eb", "EB rates"), ("gbm", "Gradient boosting")):
+            if m in co:
+                r = co[m]
+                rows.append({"Player model": name, "Gap vs team model (MAE)": r["mae_gap_vs_team_model"],
+                             "Team-points RMSE of the sum": r["rmse_team_points_from_sum"],
+                             "Implied SD if independent": r["implied_sd_if_independent"],
+                             "Realised SD": r["realised_sd"], "80% coverage if independent": r["coverage80_if_independent"]})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
+                     column_config={"80% coverage if independent": st.column_config.NumberColumn(format="percent"),
+                                    **{c: st.column_config.NumberColumn(format="%.2f") for c in
+                                       ("Gap vs team model (MAE)", "Team-points RMSE of the sum",
+                                        "Implied SD if independent", "Realised SD")}})
+        st.caption(f"Test seasons. The team model's team-points RMSE on the same games is "
+                   f"{co['team_model_rmse_team_points']:.2f}. Teammates compete for the same possessions, so their "
+                   "points are negatively correlated; treating them as independent overstates team-score uncertainty. "
+                   "In the simulation the team score equals the sum of its player points in every simulated game.")
+    ab = summ.get("opponent_ablation")
+    if ab:
+        st.subheader("Matchups: do opponent features help?")
+        rows = [{"Stat": k.upper(), "MAE with opponent": v["with_opponent"]["mae"],
+                 "MAE without": v["without_opponent"]["mae"], "Gain": v["mae_gain"],
+                 "95% CI": f"{v['mae_gain_ci95'][0]:+.4f} to {v['mae_gain_ci95'][1]:+.4f}"} for k, v in ab.items()]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
+                     column_config={c: st.column_config.NumberColumn(format="%.4f") for c in
+                                    ("MAE with opponent", "MAE without")} | {"Gain": st.column_config.NumberColumn(format="%+.4f")})
+        st.caption("Gradient boosting retrained without any opponent feature (test seasons); game-clustered bootstrap.")
+    pa = summ.get("participation")
+    if pa and "calibration" in pa:
+        st.subheader("Uncertain participation (deep bench)")
+        c_ = pa["calibration"]
+        st.dataframe(pd.DataFrame({"Predicted P(play)": c_["pred"], "Observed": c_["obs"], "Players": c_["n"]}),
+                     hide_index=True, use_container_width=True,
+                     column_config={"Predicted P(play)": st.column_config.NumberColumn(format="%.2f"),
+                                    "Observed": st.column_config.NumberColumn(format="%.2f")})
+        st.caption(f"{pa['season']}: pregame participation probability of fringe players vs who appeared "
+                   f"({pa['games']} games). Rotation players are treated as known from the injury report.")
     cost = summ.get("cost", {})
     if "us_per_game" in cost:
         st.subheader("Computational cost")

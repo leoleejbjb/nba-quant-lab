@@ -1,0 +1,7 @@
+[
+ "<b>Point forecasts: simpler models are as good.</b> Gradient boosting (points MAE 4.380), closed-form empirical-Bayes rates (4.406) and the possession simulation (4.412) sit within 0.7% of each other and 5-6% ahead of season averages (4.667). Most of the gain is the minutes model.",
+ "<b>Distributions: the simulation is the best calibrated.</b> For points and PRA its PIT calibration error is 0.04 and 0.08 against 0.22 and 0.19 for negative-binomial distributions around the best point forecasts, and its 80% PRA intervals cover 79.7% against 73.8%.",
+ "<b>Team forecasts gain a little from the player layer.</b> Alone, the bottom-up simulation is worse than the team model. Blended 25/75 with it, spread RMSE falls from 14.334 to 14.292 (squared-error reduction 95% CI +0.16 to +2.22); totals do not change.",
+ "<b>Players must be modelled jointly.</b> Summing independent player projections misses the team forecast by 5.9 points on average and implies a team-score SD of 18.6 against a realised 13.2. In the simulation every team score is the sum of its players' points.",
+ "<b>Two mechanisms the data supports.</b> Shot shares grow super-linearly with usage (alpha 1.3), and true shooting falls 0.88 points per +10% relative usage, estimated with teammate absences as a natural experiment. Opponent features help every statistic, by about 0.1%."
+]

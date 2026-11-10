@@ -12,7 +12,45 @@ injuries, minutes limits or lineup changes. Everything is validated walk-forward
 
 ![Projected box score](docs/screenshots/game.png)
 
-<!-- RESULTS -->
+## Results (walk-forward, test seasons 2024-25 and 2025-26)
+
+Everything was tuned on 2023-24 and scored once on 2,460 test games / 52,865 player-games. Full tables:
+[docs/REPORT.md](docs/REPORT.md) and the auto-generated [docs/FINDINGS_DATA.md](docs/FINDINGS_DATA.md).
+
+1. **The box-score database is exact.** Player box scores derived from play-by-play match the official NBA.com box
+   scores for 99.27% of 2023-24 player-games on every stat (minutes within 1 s for 99.97%, plus-minus 99.80%).
+2. **Minutes are where accuracy is won.** A LightGBM minutes model with pregame teammate-absence features has MAE
+   4.30 minutes vs 5.32 for season averages (-19%). A subtle leak - deep-bench appearances reveal blowouts - was found
+   and removed.
+3. **Point forecasts: simpler models are as good.** Gradient boosting (points MAE 4.380), closed-form empirical-Bayes
+   rates (4.406) and the simulation (4.412) are within 0.7% of each other, all 5-6% better than season averages
+   (4.667).
+4. **Distributions: the simulation is the best calibrated.** For points and PRA - the lumpy, skewed statistics props
+   are written on - the simulation's PIT calibration error is 0.04 / 0.08 vs 0.22 / 0.19 for negative-binomial
+   distributions around the best point forecasts, and its 80% PRA intervals cover 79.7% vs 73.8%. It has the best
+   or tied-best CRPS for rebounds, PRA, steals and turnovers.
+5. **Team forecasts.** Player-level simulation alone is worse than the team model for spreads and totals; blended
+   with it (weight chosen on 2023-24) it improves spreads significantly but slightly (RMSE 14.334 -> 14.292; 95% CI
+   of the squared-error reduction +0.16 to +2.22) and leaves totals unchanged.
+6. **Joint modelling matters.** Summing independently projected players misses the team forecast by 5.9 points on
+   average and overstates team-score uncertainty by 40% (implied SD 18.6 vs realised 13.2): teammates share
+   possessions. Every simulated game satisfies every box-score identity.
+7. **Two data-backed mechanisms.** Shot shares grow super-linearly with usage (alpha = 1.3), and a player's true
+   shooting falls 0.88 points per +10% relative usage (natural experiment via teammate absences; naive regression gets
+   the sign wrong). Matchup (opponent) features help every stat but by about 0.1%.
+
+| | Points MAE | Points CRPS | Points PIT error | PRA 80% coverage | Spread RMSE | Total RMSE |
+|---|---:|---:|---:|---:|---:|---:|
+| Season average | 4.667 | 3.387 | 0.246 | 72.4% | | |
+| Gradient boosting | **4.380** | 3.128 | 0.218 | 73.8% | | |
+| Possession simulation | 4.412 | 3.084 | **0.038** | **79.7%** | 14.514 | 18.662 |
+| Team model | | | | | 14.334 | 18.484 |
+| **Blend (team model + simulation)** | | | | | **14.292** | **18.474** |
+
+**Live data.** The current 2026-27 season is not in the pinned sources and the NBA's CDN refused this environment, so
+"upcoming games" are any as-of date's slate projected from earlier games only - exactly the pregame computation,
+with the advantage that it can be checked against what happened ([docs/DATA.md](docs/DATA.md)).
+
 
 ## Quick start
 

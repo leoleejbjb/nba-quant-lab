@@ -2,79 +2,91 @@
 
 Tuning season: 2023-24. Test seasons: 2024-25, 2025-26. All predictions walk-forward (pregame information only). Bold = best model per statistic.
 
-## Player statistics - test (52,950 player-games, identical across models)
+## Player statistics - test (52,865 player-games, identical across models)
 
 ### MAE
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | 4.663 | 1.931 | 1.351 | 0.887 | 6.211 | 0.719 | 0.507 | 0.898 |
-| Last-10 average | 4.687 | 1.951 | 1.368 | 0.900 | 6.205 | 0.731 | 0.511 | 0.911 |
-| Per-minute x projected minutes | 4.444 | 1.854 | 1.312 | 0.875 | 5.767 | 0.715 | **0.506** | 0.886 |
-| Opponent-adjusted per-minute | 4.464 | 1.855 | 1.310 | 0.875 | 5.805 | 0.718 | 0.509 | 0.882 |
-| Empirical-Bayes rates (closed form) | 4.402 | 1.861 | 1.311 | 0.875 | 5.709 | **0.702** | 0.509 | 0.865 |
-| Gradient boosting (LightGBM, Poisson) | **4.376** | **1.826** | **1.307** | **0.870** | **5.668** | 0.706 | 0.512 | **0.864** |
-| Team-first reconciliation | 4.380 | 1.861 | 1.318 | 0.875 | 5.679 | 0.703 | 0.510 | 0.865 |
+| Season average | 4.667 | 1.932 | 1.352 | 0.888 | 6.215 | 0.720 | 0.507 | 0.899 |
+| Last-10 average | 4.691 | 1.952 | 1.369 | 0.901 | 6.210 | 0.732 | 0.512 | 0.911 |
+| Per-minute x projected minutes | 4.448 | 1.856 | 1.314 | 0.876 | 5.772 | 0.715 | **0.507** | 0.886 |
+| Opponent-adjusted per-minute | 4.468 | 1.856 | 1.312 | 0.876 | 5.810 | 0.718 | 0.509 | 0.883 |
+| Empirical-Bayes rates (closed form) | 4.406 | 1.862 | 1.312 | 0.876 | 5.714 | **0.703** | 0.510 | 0.866 |
+| Gradient boosting (LightGBM, Poisson) | **4.380** | **1.827** | **1.309** | **0.871** | **5.673** | 0.706 | 0.512 | **0.865** |
+| Possession simulation (bottom-up) | 4.412 | 1.843 | 1.315 | 0.882 | 5.718 | 0.704 | 0.518 | 0.866 |
+| Possession simulation (team-constrained) | 4.410 | 1.846 | 1.315 | 0.880 | 5.719 | 0.704 | 0.518 | 0.867 |
+| Team-first reconciliation | 4.384 | 1.862 | 1.319 | 0.876 | 5.684 | 0.703 | 0.510 | 0.866 |
 
 ### RMSE
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | 6.155 | 2.566 | 1.859 | 1.258 | 8.082 | 0.946 | 0.734 | 1.194 |
-| Last-10 average | 6.161 | 2.581 | 1.870 | 1.275 | 8.036 | 0.962 | 0.748 | 1.209 |
-| Per-minute x projected minutes | 5.871 | 2.452 | 1.803 | 1.237 | 7.507 | 0.939 | 0.730 | 1.175 |
-| Opponent-adjusted per-minute | 5.899 | 2.452 | 1.800 | 1.236 | 7.562 | 0.942 | 0.735 | 1.170 |
-| Empirical-Bayes rates (closed form) | 5.774 | 2.428 | 1.781 | **1.216** | 7.364 | **0.919** | **0.716** | 1.142 |
-| Gradient boosting (LightGBM, Poisson) | 5.750 | **2.411** | **1.774** | 1.219 | 7.336 | 0.920 | 0.716 | **1.142** |
-| Team-first reconciliation | **5.724** | 2.429 | 1.787 | 1.216 | **7.300** | 0.920 | 0.716 | 1.143 |
+| Season average | 6.159 | 2.567 | 1.860 | 1.258 | 8.086 | 0.946 | 0.734 | 1.194 |
+| Last-10 average | 6.165 | 2.582 | 1.871 | 1.276 | 8.040 | 0.963 | 0.748 | 1.210 |
+| Per-minute x projected minutes | 5.875 | 2.453 | 1.804 | 1.238 | 7.512 | 0.939 | 0.731 | 1.176 |
+| Opponent-adjusted per-minute | 5.903 | 2.453 | 1.801 | 1.237 | 7.567 | 0.943 | 0.735 | 1.171 |
+| Empirical-Bayes rates (closed form) | 5.778 | 2.430 | 1.782 | **1.217** | 7.368 | 0.920 | 0.716 | 1.143 |
+| Gradient boosting (LightGBM, Poisson) | 5.754 | 2.413 | **1.775** | 1.219 | 7.340 | 0.921 | 0.716 | 1.143 |
+| Possession simulation (bottom-up) | 5.764 | **2.410** | 1.779 | 1.223 | 7.345 | 0.919 | 0.715 | 1.139 |
+| Possession simulation (team-constrained) | 5.766 | 2.412 | 1.780 | 1.222 | 7.347 | **0.919** | **0.715** | **1.139** |
+| Team-first reconciliation | **5.727** | 2.430 | 1.788 | 1.217 | **7.304** | 0.920 | 0.717 | 1.144 |
 
 ### CRPS (lower is better)
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | 3.384 | 1.365 | 0.939 | 0.599 | 4.548 | 0.461 | 0.304 | 0.600 |
-| Last-10 average | 3.374 | 1.371 | 0.944 | 0.606 | 4.503 | 0.470 | 0.311 | 0.609 |
-| Per-minute x projected minutes | 3.199 | 1.300 | 0.906 | 0.586 | 4.179 | 0.455 | 0.302 | 0.588 |
-| Opponent-adjusted per-minute | 3.212 | 1.299 | 0.905 | 0.585 | 4.205 | 0.457 | 0.304 | 0.585 |
-| Empirical-Bayes rates (closed form) | 3.143 | 1.279 | 0.892 | **0.574** | 4.089 | **0.443** | **0.294** | 0.568 |
-| Gradient boosting (LightGBM, Poisson) | 3.125 | **1.271** | **0.887** | 0.574 | 4.070 | 0.444 | 0.294 | **0.567** |
-| Team-first reconciliation | **3.073** | 1.282 | 0.896 | 0.574 | **4.026** | 0.443 | 0.294 | 0.568 |
+| Season average | 3.387 | 1.366 | 0.940 | 0.599 | 4.551 | 0.461 | 0.304 | 0.601 |
+| Last-10 average | 3.377 | 1.372 | 0.945 | 0.606 | 4.506 | 0.471 | 0.311 | 0.609 |
+| Per-minute x projected minutes | 3.202 | 1.300 | 0.907 | 0.586 | 4.182 | 0.456 | 0.302 | 0.588 |
+| Opponent-adjusted per-minute | 3.215 | 1.300 | 0.906 | 0.586 | 4.209 | 0.457 | 0.304 | 0.586 |
+| Empirical-Bayes rates (closed form) | 3.146 | 1.280 | 0.893 | **0.574** | 4.093 | 0.444 | **0.294** | 0.569 |
+| Gradient boosting (LightGBM, Poisson) | 3.128 | 1.272 | **0.888** | 0.575 | 4.074 | 0.444 | 0.294 | 0.568 |
+| Possession simulation (bottom-up) | 3.084 | **1.269** | 0.891 | 0.577 | **4.019** | **0.443** | 0.294 | **0.567** |
+| Possession simulation (team-constrained) | 3.085 | 1.271 | 0.892 | 0.577 | 4.021 | 0.443 | 0.294 | 0.567 |
+| Team-first reconciliation | **3.076** | 1.283 | 0.896 | 0.575 | 4.029 | 0.444 | 0.294 | 0.569 |
 
 ### Calibration error: PIT histogram L1 distance from uniform (0 = perfect)
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | 0.247 | 0.072 | 0.069 | 0.049 | 0.221 | 0.038 | 0.039 | 0.042 |
-| Last-10 average | 0.246 | 0.080 | 0.061 | 0.049 | 0.217 | 0.050 | 0.054 | 0.042 |
-| Per-minute x projected minutes | 0.235 | **0.067** | 0.044 | 0.039 | 0.208 | 0.032 | 0.043 | 0.032 |
-| Opponent-adjusted per-minute | 0.227 | 0.070 | 0.046 | 0.042 | 0.206 | 0.039 | 0.048 | 0.034 |
-| Empirical-Bayes rates (closed form) | 0.222 | 0.110 | **0.020** | **0.018** | **0.193** | 0.024 | **0.011** | 0.020 |
-| Gradient boosting (LightGBM, Poisson) | 0.217 | 0.068 | 0.028 | 0.021 | 0.194 | **0.014** | 0.016 | 0.020 |
-| Team-first reconciliation | **0.140** | 0.137 | 0.084 | 0.044 | 0.198 | 0.029 | 0.028 | **0.016** |
+| Season average | 0.246 | 0.072 | 0.069 | 0.050 | 0.222 | 0.036 | 0.037 | 0.039 |
+| Last-10 average | 0.243 | 0.075 | 0.059 | 0.048 | 0.216 | 0.048 | 0.059 | 0.047 |
+| Per-minute x projected minutes | 0.233 | **0.066** | 0.044 | 0.040 | 0.207 | 0.035 | 0.037 | 0.037 |
+| Opponent-adjusted per-minute | 0.228 | 0.066 | 0.046 | 0.039 | 0.206 | 0.037 | 0.042 | 0.030 |
+| Empirical-Bayes rates (closed form) | 0.221 | 0.112 | **0.018** | 0.020 | 0.191 | 0.023 | **0.016** | 0.021 |
+| Gradient boosting (LightGBM, Poisson) | 0.218 | 0.069 | 0.030 | **0.019** | 0.193 | **0.016** | 0.019 | **0.015** |
+| Possession simulation (bottom-up) | **0.038** | 0.072 | 0.043 | 0.039 | **0.081** | 0.026 | 0.052 | 0.017 |
+| Possession simulation (team-constrained) | 0.043 | 0.078 | 0.041 | 0.037 | 0.083 | 0.024 | 0.053 | 0.021 |
+| Team-first reconciliation | 0.140 | 0.137 | 0.084 | 0.044 | 0.198 | 0.029 | 0.029 | 0.017 |
 
 ### 80% interval coverage (inclusive ends; discrete stats sit above 80% when calibrated)
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | 0.729 | 0.852 | 0.890 | 0.921 | 0.723 | 0.931 | 0.938 | 0.918 |
-| Last-10 average | 0.731 | 0.848 | 0.886 | 0.915 | 0.724 | 0.919 | 0.919 | 0.915 |
+| Season average | 0.729 | 0.852 | 0.890 | 0.921 | 0.724 | 0.931 | 0.938 | 0.918 |
+| Last-10 average | 0.731 | 0.848 | 0.886 | 0.914 | 0.725 | 0.919 | 0.919 | 0.915 |
 | Per-minute x projected minutes | 0.739 | 0.857 | 0.895 | 0.924 | 0.733 | 0.934 | 0.942 | 0.922 |
 | Opponent-adjusted per-minute | 0.739 | 0.857 | 0.895 | 0.924 | 0.733 | 0.934 | 0.941 | 0.923 |
 | Empirical-Bayes rates (closed form) | 0.746 | 0.865 | 0.913 | 0.936 | 0.738 | 0.942 | 0.954 | 0.933 |
-| Gradient boosting (LightGBM, Poisson) | 0.749 | 0.863 | 0.914 | 0.933 | 0.738 | 0.947 | 0.956 | 0.933 |
+| Gradient boosting (LightGBM, Poisson) | 0.748 | 0.863 | 0.914 | 0.933 | 0.738 | 0.946 | 0.956 | 0.933 |
+| Possession simulation (bottom-up) | 0.846 | 0.874 | 0.908 | 0.931 | 0.797 | 0.940 | 0.956 | 0.938 |
+| Possession simulation (team-constrained) | 0.845 | 0.875 | 0.908 | 0.931 | 0.795 | 0.939 | 0.956 | 0.938 |
 | Team-first reconciliation | 0.795 | 0.850 | 0.893 | 0.929 | 0.740 | 0.939 | 0.951 | 0.934 |
 
 ### Bias (prediction - actual)
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | -0.410 | -0.124 | -0.108 | -0.046 | -0.643 | -0.017 | -0.007 | -0.021 |
-| Last-10 average | -0.086 | -0.022 | -0.018 | -0.011 | -0.126 | -0.006 | -0.000 | -0.008 |
-| Per-minute x projected minutes | -0.201 | -0.021 | -0.064 | -0.020 | -0.286 | +0.003 | +0.006 | +0.009 |
+| Season average | -0.412 | -0.125 | -0.109 | -0.046 | -0.646 | -0.017 | -0.007 | -0.021 |
+| Last-10 average | -0.088 | -0.023 | -0.018 | -0.011 | -0.128 | -0.006 | -0.000 | -0.008 |
+| Per-minute x projected minutes | -0.201 | -0.021 | -0.064 | -0.020 | -0.286 | +0.003 | +0.007 | +0.009 |
 | Opponent-adjusted per-minute | -0.200 | -0.016 | -0.062 | -0.013 | -0.283 | +0.010 | +0.011 | +0.010 |
-| Empirical-Bayes rates (closed form) | -0.142 | +0.254 | -0.025 | -0.001 | +0.088 | -0.032 | +0.003 | -0.026 |
-| Gradient boosting (LightGBM, Poisson) | -0.071 | -0.011 | +0.035 | -0.017 | -0.071 | -0.013 | +0.009 | -0.031 |
-| Team-first reconciliation | -0.014 | +0.253 | +0.006 | -0.000 | +0.244 | -0.032 | +0.003 | -0.026 |
+| Empirical-Bayes rates (closed form) | -0.144 | +0.254 | -0.025 | -0.001 | +0.086 | -0.032 | +0.003 | -0.026 |
+| Gradient boosting (LightGBM, Poisson) | -0.073 | -0.011 | +0.035 | -0.017 | -0.073 | -0.013 | +0.009 | -0.031 |
+| Possession simulation (bottom-up) | -0.030 | +0.113 | -0.031 | +0.013 | +0.052 | -0.026 | +0.039 | -0.005 |
+| Possession simulation (team-constrained) | -0.083 | +0.135 | -0.044 | +0.006 | +0.008 | -0.026 | +0.039 | -0.004 |
+| Team-first reconciliation | -0.016 | +0.253 | +0.005 | -0.001 | +0.243 | -0.032 | +0.003 | -0.026 |
 
 ### Minutes
 
@@ -87,79 +99,87 @@ Tuning season: 2023-24. Test seasons: 2024-25, 2025-26. All predictions walk-for
 | gbm | 4.297 | 5.589 | +0.004 | 4.275 | 52,950 |
 | gbm_norm | 4.367 | 5.690 | +0.291 | 4.354 | 52,950 |
 | gbm_pre_norm | 4.497 | 5.854 | +0.289 | 4.503 | 52,950 |
+| sim_none | 4.310 | 5.595 | +0.032 | 4.277 | 52,873 |
+| sim_team | 4.313 | 5.597 | +0.028 | 4.280 | 52,875 |
 
-## Player statistics - tuning (26,349 player-games, identical across models)
+## Player statistics - tuning (26,340 player-games, identical across models)
 
 ### MAE
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | 4.604 | 1.909 | 1.356 | 0.857 | 6.204 | 0.678 | 0.524 | 0.874 |
-| Last-10 average | 4.644 | 1.919 | 1.371 | 0.871 | 6.183 | 0.685 | 0.528 | 0.883 |
-| Per-minute x projected minutes | 4.405 | **1.826** | 1.315 | 0.842 | 5.767 | 0.673 | 0.522 | 0.862 |
-| Opponent-adjusted per-minute | 4.425 | 1.827 | 1.315 | **0.842** | 5.807 | 0.675 | 0.525 | 0.861 |
-| Empirical-Bayes rates (closed form) | 4.373 | 1.842 | **1.310** | 0.842 | 5.744 | **0.663** | **0.521** | 0.849 |
-| Possession simulation (bottom-up) | 4.387 | 1.830 | 1.318 | 0.845 | 5.759 | 0.665 | 0.525 | **0.848** |
-| Team-first reconciliation | **4.347** | 1.843 | 1.312 | 0.843 | **5.693** | 0.664 | 0.521 | 0.849 |
+| Season average | 4.605 | 1.909 | 1.356 | 0.857 | 6.204 | 0.678 | 0.524 | 0.874 |
+| Last-10 average | 4.644 | 1.919 | 1.371 | 0.871 | 6.184 | 0.685 | 0.528 | 0.884 |
+| Per-minute x projected minutes | 4.406 | 1.826 | 1.315 | 0.842 | 5.768 | 0.673 | 0.522 | 0.863 |
+| Opponent-adjusted per-minute | 4.426 | 1.827 | 1.316 | **0.842** | 5.807 | 0.675 | 0.525 | 0.861 |
+| Empirical-Bayes rates (closed form) | 4.374 | 1.842 | **1.310** | 0.842 | 5.745 | **0.663** | **0.521** | 0.849 |
+| Possession simulation (bottom-up) | 4.377 | **1.822** | 1.319 | 0.846 | 5.740 | 0.666 | 0.526 | **0.849** |
+| Possession simulation (team-constrained) | 4.378 | 1.824 | 1.319 | 0.846 | 5.741 | 0.667 | 0.526 | 0.849 |
+| Team-first reconciliation | **4.348** | 1.843 | 1.312 | 0.843 | **5.694** | 0.664 | 0.521 | 0.850 |
 
 ### RMSE
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | 6.075 | 2.549 | 1.872 | 1.225 | 8.040 | 0.898 | 0.762 | 1.158 |
-| Last-10 average | 6.106 | 2.548 | 1.876 | 1.243 | 7.997 | 0.912 | 0.774 | 1.174 |
-| Per-minute x projected minutes | 5.828 | 2.435 | 1.810 | 1.203 | 7.518 | 0.891 | 0.758 | 1.143 |
-| Opponent-adjusted per-minute | 5.857 | 2.435 | 1.808 | 1.201 | 7.572 | 0.894 | 0.764 | 1.142 |
-| Empirical-Bayes rates (closed form) | 5.743 | 2.416 | 1.793 | **1.183** | 7.408 | **0.871** | 0.744 | 1.118 |
-| Possession simulation (bottom-up) | 5.759 | **2.411** | **1.789** | 1.190 | 7.435 | 0.871 | **0.740** | **1.116** |
-| Team-first reconciliation | **5.691** | 2.417 | 1.798 | 1.184 | **7.329** | 0.871 | 0.744 | 1.118 |
+| Season average | 6.076 | 2.548 | 1.872 | 1.225 | 8.040 | 0.898 | 0.762 | 1.159 |
+| Last-10 average | 6.106 | 2.547 | 1.877 | 1.243 | 7.997 | 0.912 | 0.774 | 1.174 |
+| Per-minute x projected minutes | 5.829 | 2.435 | 1.810 | 1.203 | 7.519 | 0.891 | 0.758 | 1.143 |
+| Opponent-adjusted per-minute | 5.858 | 2.435 | 1.809 | 1.201 | 7.573 | 0.894 | 0.764 | 1.142 |
+| Empirical-Bayes rates (closed form) | 5.743 | 2.416 | 1.793 | **1.184** | 7.408 | 0.871 | 0.744 | 1.118 |
+| Possession simulation (bottom-up) | 5.735 | **2.397** | **1.788** | 1.188 | 7.388 | **0.870** | 0.739 | 1.115 |
+| Possession simulation (team-constrained) | 5.735 | 2.398 | 1.789 | 1.188 | 7.388 | 0.871 | **0.739** | **1.115** |
+| Team-first reconciliation | **5.692** | 2.417 | 1.798 | 1.184 | **7.330** | 0.871 | 0.744 | 1.118 |
 
 ### CRPS (lower is better)
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Season average | 3.331 | 1.347 | 0.942 | 0.575 | 4.521 | 0.429 | 0.317 | 0.578 |
-| Last-10 average | 3.333 | 1.346 | 0.943 | 0.583 | 4.473 | 0.437 | 0.324 | 0.586 |
-| Per-minute x projected minutes | 3.161 | 1.280 | 0.906 | 0.562 | 4.168 | 0.424 | 0.314 | 0.567 |
-| Opponent-adjusted per-minute | 3.174 | 1.280 | 0.906 | 0.561 | 4.194 | 0.425 | 0.317 | 0.566 |
-| Empirical-Bayes rates (closed form) | 3.115 | 1.266 | **0.894** | **0.551** | 4.106 | **0.411** | 0.307 | 0.552 |
-| Possession simulation (bottom-up) | 3.073 | **1.266** | 0.895 | 0.555 | 4.077 | 0.412 | **0.306** | **0.552** |
-| Team-first reconciliation | **3.041** | 1.269 | 0.896 | 0.551 | **4.032** | 0.412 | 0.307 | 0.552 |
+| Last-10 average | 3.334 | 1.346 | 0.943 | 0.583 | 4.473 | 0.437 | 0.324 | 0.586 |
+| Per-minute x projected minutes | 3.162 | 1.280 | 0.906 | 0.562 | 4.169 | 0.424 | 0.314 | 0.567 |
+| Opponent-adjusted per-minute | 3.175 | 1.280 | 0.906 | 0.561 | 4.194 | 0.426 | 0.317 | 0.567 |
+| Empirical-Bayes rates (closed form) | 3.116 | 1.266 | 0.894 | **0.551** | 4.107 | **0.412** | 0.307 | 0.552 |
+| Possession simulation (bottom-up) | 3.053 | **1.254** | **0.893** | 0.553 | **4.031** | 0.412 | 0.305 | 0.551 |
+| Possession simulation (team-constrained) | 3.054 | 1.256 | 0.893 | 0.553 | 4.033 | 0.412 | **0.305** | **0.551** |
+| Team-first reconciliation | **3.042** | 1.269 | 0.896 | 0.551 | 4.033 | 0.412 | 0.307 | 0.552 |
 
 ### Calibration error: PIT histogram L1 distance from uniform (0 = perfect)
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | 0.242 | 0.062 | 0.065 | 0.038 | 0.228 | 0.040 | 0.043 | 0.036 |
-| Last-10 average | 0.251 | 0.075 | 0.066 | 0.043 | 0.225 | 0.052 | 0.060 | 0.041 |
-| Per-minute x projected minutes | 0.230 | 0.059 | 0.044 | 0.030 | 0.208 | 0.027 | 0.040 | 0.035 |
-| Opponent-adjusted per-minute | 0.222 | **0.057** | 0.053 | 0.038 | 0.210 | 0.034 | 0.046 | 0.034 |
-| Empirical-Bayes rates (closed form) | 0.214 | 0.121 | **0.018** | **0.018** | 0.205 | **0.017** | **0.022** | 0.017 |
-| Possession simulation (bottom-up) | **0.062** | 0.088 | 0.062 | 0.040 | **0.140** | 0.034 | 0.027 | 0.014 |
+| Season average | 0.243 | 0.065 | 0.065 | 0.042 | 0.226 | 0.041 | 0.041 | 0.040 |
+| Last-10 average | 0.245 | 0.074 | 0.070 | 0.048 | 0.225 | 0.052 | 0.066 | 0.041 |
+| Per-minute x projected minutes | 0.231 | 0.064 | 0.048 | 0.034 | 0.207 | 0.030 | 0.038 | 0.035 |
+| Opponent-adjusted per-minute | 0.224 | **0.062** | 0.048 | 0.042 | 0.209 | 0.035 | 0.047 | 0.030 |
+| Empirical-Bayes rates (closed form) | 0.215 | 0.124 | **0.017** | **0.021** | 0.204 | **0.022** | 0.023 | 0.026 |
+| Possession simulation (bottom-up) | **0.034** | 0.068 | 0.050 | 0.026 | **0.095** | 0.025 | **0.023** | 0.018 |
+| Possession simulation (team-constrained) | 0.036 | 0.070 | 0.046 | 0.025 | 0.096 | 0.022 | 0.027 | 0.018 |
 | Team-first reconciliation | 0.141 | 0.139 | 0.080 | 0.035 | 0.208 | 0.031 | 0.027 | **0.010** |
 
 ### 80% interval coverage (inclusive ends; discrete stats sit above 80% when calibrated)
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | 0.734 | 0.858 | 0.888 | 0.924 | 0.720 | 0.932 | 0.936 | 0.923 |
+| Season average | 0.734 | 0.858 | 0.888 | 0.924 | 0.721 | 0.932 | 0.936 | 0.923 |
 | Last-10 average | 0.730 | 0.852 | 0.886 | 0.916 | 0.722 | 0.919 | 0.919 | 0.917 |
-| Per-minute x projected minutes | 0.745 | 0.860 | 0.893 | 0.927 | 0.733 | 0.937 | 0.939 | 0.925 |
-| Opponent-adjusted per-minute | 0.746 | 0.861 | 0.893 | 0.927 | 0.733 | 0.937 | 0.938 | 0.925 |
+| Per-minute x projected minutes | 0.745 | 0.860 | 0.893 | 0.926 | 0.733 | 0.937 | 0.939 | 0.925 |
+| Opponent-adjusted per-minute | 0.745 | 0.861 | 0.893 | 0.927 | 0.733 | 0.937 | 0.938 | 0.925 |
 | Empirical-Bayes rates (closed form) | 0.751 | 0.868 | 0.908 | 0.939 | 0.734 | 0.946 | 0.950 | 0.937 |
-| Possession simulation (bottom-up) | 0.839 | 0.868 | 0.901 | 0.931 | 0.765 | 0.943 | 0.949 | 0.937 |
+| Possession simulation (bottom-up) | 0.850 | 0.878 | 0.906 | 0.932 | 0.791 | 0.945 | 0.950 | 0.939 |
+| Possession simulation (team-constrained) | 0.848 | 0.878 | 0.906 | 0.933 | 0.791 | 0.945 | 0.951 | 0.939 |
 | Team-first reconciliation | 0.800 | 0.853 | 0.889 | 0.932 | 0.737 | 0.944 | 0.944 | 0.937 |
 
 ### Bias (prediction - actual)
 
 | Model | PTS | REB | AST | FG3M | PRA | STL | BLK | TOV |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Season average | -0.275 | -0.103 | -0.115 | -0.036 | -0.493 | -0.019 | -0.012 | -0.011 |
-| Last-10 average | +0.019 | -0.011 | -0.008 | -0.005 | -0.000 | -0.012 | -0.003 | -0.004 |
-| Per-minute x projected minutes | -0.072 | -0.009 | -0.073 | -0.013 | -0.153 | -0.001 | -0.000 | +0.014 |
-| Opponent-adjusted per-minute | -0.070 | -0.006 | -0.052 | -0.009 | -0.152 | +0.003 | +0.010 | +0.013 |
+| Season average | -0.276 | -0.104 | -0.115 | -0.036 | -0.495 | -0.019 | -0.012 | -0.011 |
+| Last-10 average | +0.019 | -0.012 | -0.008 | -0.005 | -0.001 | -0.012 | -0.003 | -0.004 |
+| Per-minute x projected minutes | -0.072 | -0.009 | -0.073 | -0.013 | -0.153 | -0.001 | -0.001 | +0.014 |
+| Opponent-adjusted per-minute | -0.070 | -0.006 | -0.051 | -0.009 | -0.152 | +0.002 | +0.010 | +0.013 |
 | Empirical-Bayes rates (closed form) | +0.014 | +0.285 | -0.072 | -0.002 | +0.227 | -0.011 | -0.023 | +0.007 |
-| Possession simulation (bottom-up) | -0.021 | +0.086 | -0.052 | -0.007 | +0.013 | +0.001 | +0.004 | +0.007 |
+| Possession simulation (bottom-up) | +0.015 | +0.099 | -0.043 | -0.003 | +0.071 | +0.003 | +0.006 | +0.012 |
+| Possession simulation (team-constrained) | +0.012 | +0.099 | -0.044 | -0.003 | +0.068 | +0.003 | +0.006 | +0.012 |
 | Team-first reconciliation | +0.052 | +0.284 | -0.091 | -0.002 | +0.245 | -0.011 | -0.023 | +0.007 |
 
 ### Minutes
@@ -173,33 +193,77 @@ Tuning season: 2023-24. Test seasons: 2024-25, 2025-26. All predictions walk-for
 | gbm | 4.362 | 5.654 | +0.000 | 4.366 | 26,393 |
 | gbm_norm | 4.409 | 5.741 | +0.276 | 4.421 | 26,393 |
 | gbm_pre_norm | 4.553 | 5.925 | +0.281 | 4.588 | 26,393 |
-| sim_none | 4.458 | 5.805 | -0.042 | 4.383 | 26,349 |
+| sim_none | 4.380 | 5.663 | +0.031 | 4.371 | 26,346 |
+| sim_team | 4.385 | 5.665 | +0.027 | 4.374 | 26,348 |
 
 ## Team forecasts - test
 
 | Forecast | Margin MAE | Margin RMSE | Total MAE | Total RMSE | Margin CRPS | Total CRPS | Win log-loss | Win Brier | Games |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Team model (ratings) | 11.198 | 14.334 | 14.705 | 18.484 | 8.022 | 10.425 | 0.6035 | 0.2082 | 2,460 |
+| Simulation (bottom-up) | 11.354 | 14.514 | 14.843 | 18.662 | 8.119 | 10.511 | 0.6148 | 0.2130 | 2,460 |
+| Simulation (team-constrained) | 11.175 | 14.322 | 14.820 | 18.658 | 8.012 | 10.506 | 0.6026 | 0.2078 | 2,460 |
+| Blend (team model + bottom-up simulation) | 11.156 | 14.292 | 14.696 | 18.474 | 7.995 | 10.414 | 0.6027 | 0.2078 | 2,460 |
+
+Paired bootstrap over games (2,000 resamples) of the reduction in squared error vs the team model (positive = better):
+
+* margin blend: +1.21 (95% CI +0.16 to +2.22)
+* total blend: +0.39 (95% CI -0.78 to +1.55)
+* margin bottom up: -5.18 (95% CI -9.30 to -1.11)
 
 ## Team forecasts - tuning
 
 | Forecast | Margin MAE | Margin RMSE | Total MAE | Total RMSE | Margin CRPS | Total CRPS | Win log-loss | Win Brier | Games |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Team model (ratings) | 10.978 | 14.118 | 14.610 | 18.212 | 7.880 | 10.267 | 0.6095 | 0.2109 | 1,230 |
-| Simulation (bottom-up) | 11.232 | 14.372 | 14.675 | 18.342 | 8.030 | 10.319 | 0.6213 | 0.2160 | 1,230 |
-| Blend (team model + bottom-up simulation) | 10.977 | 14.110 | 14.576 | 18.183 | 7.875 | 10.245 | 0.6095 | 0.2109 | 1,230 |
+| Simulation (bottom-up) | 11.220 | 14.361 | 14.664 | 18.339 | 8.032 | 10.319 | 0.6206 | 0.2156 | 1,230 |
+| Simulation (team-constrained) | 10.996 | 14.140 | 14.589 | 18.243 | 7.894 | 10.281 | 0.6123 | 0.2121 | 1,230 |
+| Blend (team model + bottom-up simulation) | 10.974 | 14.108 | 14.572 | 18.182 | 7.876 | 10.244 | 0.6095 | 0.2108 | 1,230 |
 
 Paired bootstrap over games (2,000 resamples) of the reduction in squared error vs the team model (positive = better):
 
-* margin blend: +0.21 (95% CI -1.04 to +1.47)
-* total blend: +1.08 (95% CI -0.74 to +2.85)
-* margin bottom up: -7.24 (95% CI -12.40 to -2.19)
+* margin blend: +0.27 (95% CI -1.00 to +1.55)
+* total blend: +1.12 (95% CI -0.74 to +2.92)
+* margin bottom up: -6.91 (95% CI -12.16 to -1.85)
 
 Blend weight on the team model (chosen on 2023-24 by margin + total RMSE): **0.75**
 
+## Internal consistency: adding up independently projected players (test seasons)
+
+| Player model | Mean gap vs team model | MAE gap vs team model | Team-points RMSE of the sum | Implied SD if independent | Realised SD | 80% coverage if independent |
+|---|---:|---:|---:|---:|---:|---:|
+| Empirical-Bayes rates (closed form) | -1.38 | 6.71 | 13.80 | 18.40 | 13.71 | 91.0% |
+| Gradient boosting (LightGBM, Poisson) | -0.62 | 5.94 | 13.23 | 18.61 | 13.21 | 92.6% |
+
+Team model team-points RMSE on the same games: 11.70. The simulator's team score equals the sum of its player points in every simulated game.
+
+## Do matchup (opponent) features help? LightGBM ablation, test seasons
+
+| Stat | MAE with opponent features | MAE without | Gain | 95% CI (game-clustered bootstrap) |
+|---|---:|---:|---:|---|
+| PTS | 4.3816 | 4.3876 | +0.0061 | +0.0031 to +0.0091 |
+| REB | 1.8278 | 1.8307 | +0.0029 | +0.0015 to +0.0044 |
+| AST | 1.3079 | 1.3118 | +0.0038 | +0.0025 to +0.0049 |
+| FG3M | 0.8709 | 0.8728 | +0.0019 | +0.0011 to +0.0027 |
+| STL | 0.7061 | 0.7077 | +0.0016 | +0.0010 to +0.0023 |
+| BLK | 0.5118 | 0.5135 | +0.0018 | +0.0009 to +0.0025 |
+| TOV | 0.8642 | 0.8647 | +0.0004 | -0.0004 to +0.0013 |
+
+## Selection effects: fringe-player participation (2023-24, 600 games)
+
+Fringe players listed pregame: 4,777; appeared: 37.8% (mean pregame probability 32.3%). Status counts: {'played': 1804, 'dnp_cd': 1516, 'absent_from_box': 1425, 'out': 32}.
+
+| Predicted P(play) | Observed | n |
+|---:|---:|---:|
+| 0.12 | 0.33 | 1777 |
+| 0.30 | 0.37 | 1414 |
+| 0.49 | 0.39 | 1057 |
+| 0.69 | 0.54 | 407 |
+| 0.87 | 0.41 | 122 |
+
 ## Computational cost
 
-20,000 simulated games: 2.03 s (101 µs per game, 4 cores) + 0.45 s pilot calibration. Invariants on every simulated game: points_identity, team_points_equal_score, minutes_equal_5x_game, assists_le_made_fg, makes_le_attempts, plus_minus_sums, no_ties, fouls_le_7 -> all = True.
+20,000 simulated games: 1.36 s (68 µs per game, 4 cores) + 0.19 s pilot calibration. Invariants on every simulated game: points_identity, team_points_equal_score, minutes_equal_5x_game, assists_le_made_fg, makes_le_attempts, plus_minus_sums, no_ties, fouls_le_7 -> all = True.
 
 ## Data quality
 
