@@ -21,7 +21,7 @@ import pandas as pd
 from ..config import PATHS
 
 OFFSEASON_GAP_DAYS = 30.0
-RATE_HALFLIVES = (15, 40, 100, 250)
+RATE_HALFLIVES = (15, 40, 100, 250, 600)
 MIN_HALFLIVES = (7, 20, 60)
 
 COUNT_COLS = ["fga2", "fgm2", "fga3", "fgm3", "fta", "ftm", "trips2", "trips3", "and1", "oreb", "dreb",
