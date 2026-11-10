@@ -92,6 +92,7 @@ class Projector:
         self.store = InputStore()
         self.reproj = MinutesReprojector()
         self.params = params or SimParams()
+        self._shift_cache: dict = {}
 
     # ------------------------------------------------------------------ slates
     def dates(self, season: str | None = None) -> list:
@@ -115,15 +116,28 @@ class Projector:
     def minutes_fn(self, game_id: int):
         return lambda team, removed: self.reproj(int(game_id), team, removed)
 
+    def environment_shift(self, game_id: int, environment: str, env_weight: float) -> tuple:
+        """Team environment shifts of the *baseline* projection (cached): scenarios reuse them so that a
+        roster change acts bottom-up instead of being re-anchored to a team model that ignores it."""
+        key = (int(game_id), environment, round(float(env_weight), 4))
+        if key not in self._shift_cache:
+            sim = GameSimulator(self.spec(game_id), self.params)
+            sim.calibrate(environment=environment, env_weight=env_weight, n_pilot=1500)
+            self._shift_cache[key] = (sim.teams[0].eff_shift, sim.teams[1].eff_shift)
+        return self._shift_cache[key]
+
     def project(self, game_id: int, n: int = 20000, seed: int = 7, environment: str = "blend",
                 env_weight: float | None = None, scenario: Scenario | None = None,
                 base_spec: GameSpec | None = None) -> Projection:
+        w = env_weight if env_weight is not None else default_blend_weight()
         spec = copy.deepcopy(base_spec) if base_spec is not None else self.spec(game_id)
+        shift = self.environment_shift(game_id, environment, w) if environment != "none" else (0.0, 0.0)
         if scenario is not None and not scenario.is_empty():
             spec = apply(spec, scenario, self.minutes_fn(game_id))
+        spec.home.eff_shift, spec.away.eff_shift = shift
         sim = GameSimulator(spec, self.params)
-        w = env_weight if env_weight is not None else default_blend_weight()
-        info = sim.calibrate(environment=environment, env_weight=w)
+        info = sim.calibrate(environment="none")          # minutes only; environment fixed above
+        info["environment_shift"] = list(shift)
         res = sim.run(n, seed=seed)
         return Projection(int(game_id), spec, res, info)
 

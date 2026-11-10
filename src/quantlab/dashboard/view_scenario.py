@@ -65,7 +65,11 @@ def render() -> None:
     env = st.session_state["environment"]
     base_proj = state.run_projection(gid, n, env)
     base = roster_frame(pr.spec(gid))
-    ed = st.data_editor(base.drop(columns=["team_id", "person_id", "rotation"]), hide_index=True,
+    initial = base.copy()
+    q_out = {int(x) for x in str(st.query_params.get("out", "")).split(",") if x.strip().isdigit()}
+    if q_out:                                   # shareable links: ?out=<person_id>,<person_id>
+        initial["Out"] = initial["person_id"].isin(q_out)
+    ed = st.data_editor(initial.drop(columns=["team_id", "person_id", "rotation"]), hide_index=True,
                         use_container_width=True, key=f"editor_{gid}",
                         disabled=["Team", "Player"],
                         column_config={"Out": st.column_config.CheckboxColumn(help="Ruled out (injury / rest)"),

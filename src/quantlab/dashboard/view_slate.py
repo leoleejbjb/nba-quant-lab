@@ -35,6 +35,7 @@ def render() -> None:
     prog.empty()
     df = pd.DataFrame(rows)
     st.dataframe(df.drop(columns=["game_id"]), hide_index=True, use_container_width=True,
+                 height=36 * (len(df) + 1) + 4,
                  column_config={
                      "Home win": st.column_config.ProgressColumn("Home win", format="percent", min_value=0, max_value=1),
                      "Spread (home)": st.column_config.NumberColumn(format="%+.1f",

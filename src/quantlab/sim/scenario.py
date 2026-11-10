@@ -21,12 +21,38 @@ and compared.
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 
 from .engine import GameSimulator, GameSpec, SimParams, SimResult
+
+# Usage-efficiency tradeoff, estimated on 2021-22..2023-24 rotation player-games with teammate absences as a
+# natural experiment (docs/REPORT.md): +1 unit of relative usage changes true shooting by -0.088
+# (se 0.020), i.e. a logit shift of about -0.33 on the make probability. Naive OLS gets the opposite sign
+# (+0.02) because hot shooters both shoot more and make more.
+USAGE_EFFICIENCY_LOGIT = -0.33
+
+
+def expected_shares(team, alpha: float = 1.3) -> dict:
+    """Expected share of team plays each player uses while on court, given his teammates' planned minutes
+    and usage (the same weights the simulator uses: usage^alpha x usage multiplier)."""
+    w = {p.person_id: (max(p.rates["usage"], 1e-4) ** alpha) * p.usage_mult for p in team.players}
+    m = {p.person_id: max(p.min_mean, 0.0) * p.p_play for p in team.players}
+    out = {}
+    for p in team.players:
+        others = [q.person_id for q in team.players if q.person_id != p.person_id]
+        tot = sum(m[q] for q in others)
+        wbar = sum(m[q] * w[q] for q in others) / tot if tot > 0 else 0.0
+        out[p.person_id] = w[p.person_id] / (w[p.person_id] + 4.0 * wbar) if wbar > 0 else 1.0
+    return out
+
+
+def _shift_rate(r: float, d: float) -> float:
+    r = min(max(r, 1e-4), 1 - 1e-4)
+    return 1.0 / (1.0 + math.exp(-(math.log(r / (1 - r)) + d)))
 
 
 @dataclass
@@ -46,6 +72,7 @@ def apply(spec: GameSpec, sc: Scenario, minutes_fn=None) -> GameSpec:
     """Return a modified deep copy of ``spec``. ``minutes_fn(team_spec, removed_ids)`` may re-project
     minutes for a team after removals (see ``quantlab.live.reproject_minutes``)."""
     new = copy.deepcopy(spec)
+    base_shares = [expected_shares(spec.home), expected_shares(spec.away)]
     for team in (new.home, new.away):
         removed = [p.person_id for p in team.players if p.person_id in set(sc.out)]
         team.players = [p for p in team.players if p.person_id not in set(sc.out)]
@@ -69,16 +96,35 @@ def apply(spec: GameSpec, sc: Scenario, minutes_fn=None) -> GameSpec:
                 p.starter = p.person_id in five
                 if p.starter:
                     p.rotation, p.p_play = True, max(p.p_play, 1.0 if p.person_id not in sc.availability else p.p_play)
+    # usage-efficiency tradeoff: players whose expected load rises shoot less efficiently (and vice versa)
+    for t, team in enumerate((new.home, new.away)):
+        shares = expected_shares(team)
+        for p in team.players:
+            b = base_shares[t].get(p.person_id)
+            if not b:
+                continue
+            rel = float(np.clip(shares[p.person_id] / b - 1.0, -0.5, 1.0))
+            d = USAGE_EFFICIENCY_LOGIT * rel
+            if abs(d) > 1e-6:
+                p.rates = dict(p.rates)
+                p.rates["fg2"] = _shift_rate(p.rates["fg2"], d)
+                p.rates["fg3"] = _shift_rate(p.rates["fg3"], d)
     return new
 
 
 def run_pair(spec: GameSpec, sc: Scenario, n: int = 20000, seed: int = 7, params: SimParams | None = None,
-             environment: str = "none", minutes_fn=None) -> tuple[SimResult, SimResult]:
+             environment: str = "none", env_weight: float = 0.5, minutes_fn=None) -> tuple[SimResult, SimResult]:
+    """Baseline and scenario with common random numbers. The scenario reuses the baseline's team
+    environment shift (a property of the matchup): roster changes then act bottom-up, through minutes,
+    usage, efficiency, rebounding and defence, instead of being re-anchored to a team model that does not
+    know about them."""
     base = GameSimulator(copy.deepcopy(spec), params)
-    base.calibrate(environment=environment)
+    base.calibrate(environment=environment, env_weight=env_weight)
     r0 = base.run(n, seed=seed)
-    mod = GameSimulator(apply(spec, sc, minutes_fn), params)
-    mod.calibrate(environment=environment)
+    new = apply(spec, sc, minutes_fn)
+    new.home.eff_shift, new.away.eff_shift = base.teams[0].eff_shift, base.teams[1].eff_shift
+    mod = GameSimulator(new, params)
+    mod.calibrate(environment="none")
     r1 = mod.run(n, seed=seed)
     return r0, r1
 

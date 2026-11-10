@@ -20,6 +20,7 @@ table of residual quantiles by projected-minutes bin and starter role.
 from __future__ import annotations
 
 import json
+import os
 
 import lightgbm as lgb
 import numpy as np
@@ -34,7 +35,8 @@ FEATURES = ["exp_min", "min_l3", "min_l5", "min_l10", "last_min", "season_min_av
 STARTER_FEATURES = ["starter", "n_starters_known_min"]
 GBM_PARAMS = dict(objective="regression", learning_rate=0.03, num_leaves=31, min_data_in_leaf=200,
                   feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=5.0, verbose=-1,
-                  num_threads=4, seed=7, deterministic=True, force_row_wise=True)
+                  num_threads=int(os.environ.get("QUANTLAB_THREADS", "4")), seed=7, deterministic=True,
+                  force_row_wise=True)
 N_ROUNDS = 700
 DEBUT_MINUTES = 12.0   # baseline guess for a player with no NBA history
 

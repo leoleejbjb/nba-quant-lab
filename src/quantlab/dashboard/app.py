@@ -19,7 +19,9 @@ with st.sidebar:
     dates = pr.dates(season)
     default_date = st.session_state.get("asof_date")
     if default_date not in dates:
-        default_date = dates[-1]
+        counts = pr.store.games[pr.store.games["season"] == season]["game_date"].dt.date.value_counts()
+        full = [d for d in dates if counts.get(d, 0) >= 8 and (dates[-1] - d).days >= 7]
+        default_date = full[-1] if full else dates[-1]     # latest full slate (not the rest-heavy final week)
     st.selectbox("As-of date (games on this date)", dates, index=dates.index(default_date), key="asof_date",
                  format_func=lambda d: pd.Timestamp(d).strftime("%a %b %d, %Y"))
     st.select_slider("Simulations per game", options=[5000, 10000, 20000, 40000], value=20000, key="n_sims")
@@ -32,7 +34,7 @@ with st.sidebar:
                "(walk-forward). Actual results are shown for comparison because these are historical dates.")
 
 pages = [
-    st.Page(view_slate.render, title="Slate", icon=":material/calendar_month:", url_path="slate", default=True),
+    st.Page(view_slate.render, title="Slate", icon=":material/calendar_month:", default=True),
     st.Page(view_game.render, title="Projected box score", icon=":material/table_chart:", url_path="game"),
     st.Page(view_player.render, title="Player detail & props", icon=":material/person:", url_path="player"),
     st.Page(view_scenario.render, title="Scenario lab", icon=":material/tune:", url_path="scenario"),

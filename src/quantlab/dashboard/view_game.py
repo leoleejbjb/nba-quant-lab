@@ -27,29 +27,36 @@ def _game_picker(pr) -> int | None:
 
 
 def box_table(df: pd.DataFrame) -> pd.DataFrame:
+    """NBA-style box score of projected means."""
     if df.empty:
         return df
-    out = pd.DataFrame({
-        "Player": df["Player"], "": df["Start"],
-        "MIN": df["MIN"], "MIN range": [f"{a:.0f}–{b:.0f}" for a, b in zip(df["MIN_lo"], df["MIN_hi"])],
-        "PTS": df["PTS"], "PTS range": [f"{a:.0f}–{b:.0f}" for a, b in zip(df["PTS_lo"], df["PTS_hi"])],
-        "REB": df["REB"], "REB range": [f"{a:.0f}–{b:.0f}" for a, b in zip(df["REB_lo"], df["REB_hi"])],
-        "AST": df["AST"], "AST range": [f"{a:.0f}–{b:.0f}" for a, b in zip(df["AST_lo"], df["AST_hi"])],
+    return pd.DataFrame({
+        "Player": df["Player"], "": df["Start"], "MIN": df["MIN"], "PTS": df["PTS"], "REB": df["REB"],
+        "AST": df["AST"],
         "FG": [f"{a:.1f}-{b:.1f}" for a, b in zip(df["FGM"], df["FGA"])],
         "3P": [f"{a:.1f}-{b:.1f}" for a, b in zip(df["3PM"], df["3PA"])],
         "FT": [f"{a:.1f}-{b:.1f}" for a, b in zip(df["FTM"], df["FTA"])],
         "OREB": df["OREB"], "DREB": df["DREB"], "STL": df["STL"], "BLK": df["BLK"], "TOV": df["TOV"],
-        "PF": df["PF"], "+/-": df["+/-"], "P(play)": df["P(play)"]})
-    return out
+        "PF": df["PF"], "+/-": df["+/-"]})
+
+
+def range_table(df: pd.DataFrame) -> pd.DataFrame:
+    """10th-90th percentile ranges (the 80% interval) and participation."""
+    if df.empty:
+        return df
+    rng = lambda k: [f"{a:.0f}–{b:.0f}" for a, b in zip(df[f"{k}_lo"], df[f"{k}_hi"])]
+    return pd.DataFrame({"Player": df["Player"], "P(play)": df["P(play)"], "MIN": rng("MIN"), "PTS": rng("PTS"),
+                         "REB": rng("REB"), "AST": rng("AST")})
 
 
 BOX_CFG = {c: st.column_config.NumberColumn(format="%.1f") for c in
            ["MIN", "PTS", "REB", "AST", "OREB", "DREB", "STL", "BLK", "TOV", "PF"]}
 BOX_CFG["+/-"] = st.column_config.NumberColumn(format="%+.1f")
-BOX_CFG["P(play)"] = st.column_config.NumberColumn(format="percent", help="Share of simulated games he appears in")
 BOX_CFG[""] = st.column_config.TextColumn(width="small", help="Projected starter")
-for c in ["MIN range", "PTS range", "REB range", "AST range"]:
-    BOX_CFG[c] = st.column_config.TextColumn(help="10th–90th percentile of the simulated distribution", width="small")
+RANGE_CFG = {"P(play)": st.column_config.NumberColumn(format="percent", help="Share of simulated games he appears in")}
+for c in ["MIN", "PTS", "REB", "AST"]:
+    RANGE_CFG[c] = st.column_config.TextColumn(help="10th–90th percentile of the simulated distribution "
+                                                    "(conditional on playing)")
 
 
 def render() -> None:
@@ -66,7 +73,7 @@ def render() -> None:
     mg, tot = sc[:, 0] - sc[:, 1], sc.sum(axis=1)
     c = st.columns(5)
     c[0].metric(f"{home.name} win probability", style.pct(float((mg > 0).mean())))
-    c[1].metric("Projected score", f"{away.name} {sc[:, 1].mean():.1f} – {sc[:, 0].mean():.1f} {home.name}")
+    c[1].metric(f"Score ({away.name} – {home.name})", f"{sc[:, 1].mean():.1f} – {sc[:, 0].mean():.1f}")
     c[2].metric("Spread (home)", f"{-mg.mean():+.1f}",
                 help="Negative = home team favoured. 80% interval of the margin: "
                      f"{np.percentile(mg, 10):+.0f} to {np.percentile(mg, 90):+.0f}")
@@ -81,7 +88,11 @@ def render() -> None:
     for t, team in ((1, away), (0, home)):
         st.subheader(f"{team.name} {'(home)' if t == 0 else '(away)'}")
         bt = box_score_table(res, t)
-        st.dataframe(box_table(bt), hide_index=True, use_container_width=True, column_config=BOX_CFG)
+        tab_box, tab_rng = st.tabs(["Box score (projected means)", "Uncertainty (80% ranges)"])
+        h = 36 * (len(bt) + 1) + 4
+        tab_box.dataframe(box_table(bt), hide_index=True, use_container_width=True, column_config=BOX_CFG, height=h)
+        tab_rng.dataframe(range_table(bt), hide_index=True, use_container_width=True, column_config=RANGE_CFG,
+                          height=h)
     st.markdown("##### Team totals (projected means)")
     tt = team_totals(res)
     st.dataframe(tt, hide_index=True, use_container_width=True,

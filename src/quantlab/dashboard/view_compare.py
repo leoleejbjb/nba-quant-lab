@@ -53,9 +53,17 @@ def render() -> None:
                  column_config={**{c: st.column_config.NumberColumn(format="%.1f") for c in per36.columns
                                    if c not in ("Player", "GP", "TS%")},
                                 "TS%": st.column_config.NumberColumn(format="percent")})
-    # projections for the selected game, when the players are in it
+    # projections for a game on the as-of date: the selected one if it involves these players, else the
+    # first game featuring one of their teams
+    pr = state.projector()
+    sl = pr.slate(st.session_state["asof_date"])
+    teams = set(a["team"])
     gid = state.selected_game()
+    involved = sl[sl["home_team"].isin(teams) | sl["away_team"].isin(teams)]
+    if gid is None or gid not in set(involved["game_id"]):
+        gid = int(involved["game_id"].iloc[0]) if len(involved) else gid
     if gid is None:
+        st.caption("Open a game on the Slate page to compare projected distributions.")
         return
     proj = state.run_projection(gid, st.session_state["n_sims"], st.session_state["environment"])
     res = proj.result
