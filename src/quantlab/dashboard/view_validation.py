@@ -56,6 +56,7 @@ def render() -> None:
                   "gbm_norm": "LightGBM, normalized to 240", "gbm_pre_norm": "LightGBM (no lineups), normalized",
                   "sim_none": "Simulation (bottom-up)", "sim_team": "Simulation (team-constrained)"}
     mt["model"] = mt["model"].map(min_labels).fillna(mt["model"])
+    mt = mt.apply(lambda c: pd.to_numeric(c, errors="coerce") if c.name != "model" else c)
     cfg = {c: st.column_config.NumberColumn(format="%.3f") for c in mt.columns if c not in ("model", "n")}
     cfg["n"] = st.column_config.NumberColumn("player-games", format="%d")
     st.dataframe(mt, hide_index=True, use_container_width=True, column_config=cfg)
@@ -79,10 +80,12 @@ def render() -> None:
         if not fig.data:
             continue
         fig.add_hline(y=0.1, line_color=tok["ink2"], line_width=1)
-        style.base_layout(fig, 250, f"{s_.upper()}: PIT histogram", None, None, legend=(k == 0))
+        style.base_layout(fig, 250, f"{s_.upper()}: PIT histogram", None, None, legend=False)
         fig.update_layout(barmode="group", bargap=0.15, bargroupgap=0.05)
         fig.update_yaxes(tickformat=".0%", range=[0, top])
         col.plotly_chart(fig, use_container_width=True)
+    st.markdown(f"<span style='color:{tok['gray']}'>■</span> EB rates + negative binomial &nbsp;&nbsp; "
+                f"<span style='color:{tok['s1']}'>■</span> possession simulation", unsafe_allow_html=True)
     st.caption("A calibrated forecast has a flat PIT histogram at 10% per decile (the line). A U shape means "
                "too-narrow distributions, a hump means too-wide ones. Gray = the empirical-Bayes point forecast with a "
                "negative-binomial distribution; blue = the possession simulation.")
@@ -98,8 +101,10 @@ def render() -> None:
                                      marker=dict(size=8, line=dict(width=2, color=tok["surface"])),
                                      hovertemplate=f"{s_.upper()}: predicted %{{x:.0%}}, observed %{{y:.0%}}<extra></extra>"))
     fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="perfect", line=dict(width=1, color=tok["muted"])))
-    style.base_layout(fig, 360, "Over/under reliability at the half-point line nearest the projection",
+    style.base_layout(fig, 380, "Over/under reliability at the half-point line nearest the projection",
                       "predicted P(over)", "observed frequency")
+    fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0),
+                      margin=dict(l=8, r=8, t=40, b=60))
     fig.update_xaxes(tickformat=".0%", range=[0, 1])
     fig.update_yaxes(tickformat=".0%", range=[0, 1])
     st.plotly_chart(fig, use_container_width=True)
