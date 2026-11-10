@@ -238,9 +238,46 @@ def run_report(log=print) -> dict:
         log(f"[report] player comparison {name}: {len(pc)} rows")
     summary["teams"] = team_comparison(TUNING_SEASON, TEST_SEASONS)
     try:
+        summary["participation"] = participation_analysis()
+    except Exception as e:      # pragma: no cover
+        summary["participation"] = {"error": str(e)}
+    try:
         summary["cost"] = cost_benchmark()
     except Exception as e:      # pragma: no cover - benchmark is informative only
         summary["cost"] = {"error": str(e)}
     (PATHS.backtest / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
     (PATHS.models / "integration.json").write_text(json.dumps({"blend_weight": summary["teams"]["blend_weight"]}))
     return summary
+
+
+def participation_analysis(season: str = TUNING_SEASON, n_games: int = 600, seed: int = 3) -> dict:
+    """Selection effects: how well pregame participation probabilities for *fringe* players (whose appearance
+    is not known before tip-off) match who actually appeared, using the official 2020-24 availability data
+    (played / dressed-but-unused / out). Rotation players are treated as known from the injury report."""
+    from ..sim.inputs import InputStore, game_spec
+    store = InputStore()
+    av = pd.read_parquet(PATHS.processed("all") / "availability.parquet")
+    av = av[av["season"] == season]
+    ids = store.games[store.games["season"] == season].index.to_numpy()
+    ids = np.random.default_rng(seed).choice(ids, min(n_games, len(ids)), replace=False)
+    rows = []
+    for gid in ids:
+        spec = game_spec(store, int(gid))
+        status = av[av["game_id"] == gid].set_index("person_id")["status"].to_dict()
+        for team in (spec.home, spec.away):
+            for p in team.players:
+                rows.append({"game_id": int(gid), "person_id": p.person_id, "rotation": p.rotation,
+                             "p_play": p.p_play, "status": status.get(p.person_id, "absent_from_box")})
+    d = pd.DataFrame(rows)
+    fr = d[~d["rotation"]].copy()
+    fr["played"] = (fr["status"] == "played").astype(float)
+    fr["bin"] = pd.cut(fr["p_play"], [0, 0.2, 0.4, 0.6, 0.8, 1.0], include_lowest=True)
+    cal = fr.groupby("bin", observed=True).agg(pred=("p_play", "mean"), obs=("played", "mean"), n=("played", "size"))
+    av_counts = av["status"].value_counts().to_dict()
+    return {"season": season, "games": int(len(ids)),
+            "fringe_rows": int(len(fr)), "fringe_played_share": float(fr["played"].mean()),
+            "fringe_mean_p_play": float(fr["p_play"].mean()),
+            "fringe_status_counts": {k: int(v) for k, v in fr["status"].value_counts().items()},
+            "calibration": cal.reset_index(drop=True).to_dict("list"),
+            "season_status_counts": {k: int(v) for k, v in av_counts.items()},
+            "rotation_rows": int(d["rotation"].sum())}

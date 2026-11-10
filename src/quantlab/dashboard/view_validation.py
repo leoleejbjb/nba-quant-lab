@@ -51,27 +51,41 @@ def render() -> None:
                "expected for a calibrated forecast; the PIT calibration error is the fairer check (0 = perfect).")
     st.subheader("Minutes")
     mt = pd.DataFrame(summ[f"minutes_{split}"])
-    st.dataframe(mt, hide_index=True, use_container_width=True,
-                 column_config={c: st.column_config.NumberColumn(format="%.3f") for c in mt.columns if c != "model"})
+    min_labels = {"season_avg": "Season average", "l10": "Last-10 average", "ewma": "Decayed average (EWMA)",
+                  "gbm_pre": "LightGBM (no lineup info)", "gbm": "LightGBM (starting lineups known)",
+                  "gbm_norm": "LightGBM, normalized to 240", "gbm_pre_norm": "LightGBM (no lineups), normalized",
+                  "sim_none": "Simulation (bottom-up)", "sim_team": "Simulation (team-constrained)"}
+    mt["model"] = mt["model"].map(min_labels).fillna(mt["model"])
+    cfg = {c: st.column_config.NumberColumn(format="%.3f") for c in mt.columns if c not in ("model", "n")}
+    cfg["n"] = st.column_config.NumberColumn("player-games", format="%d")
+    st.dataframe(mt, hide_index=True, use_container_width=True, column_config=cfg)
 
     st.subheader("Calibration")
     pits = summ[f"pit_{split}"]
     tok = style.tokens()
     cols = st.columns(4)
-    for col, s_ in zip(cols, ["pts", "reb", "ast", "fg3m"]):
-        key = f"{s_}|sim_none"
-        if key not in pits:
+    for k, (col, s_) in enumerate(zip(cols, ["pts", "reb", "ast", "pra"])):
+        fig = go.Figure()
+        top = 0.16
+        for key, name, color in ((f"{s_}|eb", "EB + negative binomial", tok["gray"]),
+                                 (f"{s_}|sim_none", "Simulation", tok["s1"])):
+            if key not in pits:
+                continue
+            h = np.asarray(pits[key], dtype=float)
+            h = h / h.sum()
+            top = max(top, h.max() * 1.1)
+            fig.add_trace(go.Bar(x=np.arange(10) / 10 + 0.05, y=h, name=name, marker_color=color,
+                                 hovertemplate=f"{name}: PIT %{{x:.2f}} → %{{y:.1%}}<extra></extra>"))
+        if not fig.data:
             continue
-        h = np.asarray(pits[key], dtype=float)
-        h = h / h.sum()
-        fig = go.Figure(go.Bar(x=np.arange(10) / 10 + 0.05, y=h, marker_color=tok["s1"],
-                               hovertemplate="PIT %{x:.2f}: %{y:.1%}<extra></extra>"))
         fig.add_hline(y=0.1, line_color=tok["ink2"], line_width=1)
-        style.base_layout(fig, 220, f"{s_.upper()}: PIT histogram", None, None, legend=False)
-        fig.update_yaxes(tickformat=".0%", range=[0, max(0.16, h.max() * 1.1)])
+        style.base_layout(fig, 250, f"{s_.upper()}: PIT histogram", None, None, legend=(k == 0))
+        fig.update_layout(barmode="group", bargap=0.15, bargroupgap=0.05)
+        fig.update_yaxes(tickformat=".0%", range=[0, top])
         col.plotly_chart(fig, use_container_width=True)
     st.caption("A calibrated forecast has a flat PIT histogram at 10% per decile (the line). A U shape means "
-               "too-narrow distributions, a hump means too-wide ones.")
+               "too-narrow distributions, a hump means too-wide ones. Gray = the empirical-Bayes point forecast with a "
+               "negative-binomial distribution; blue = the possession simulation.")
     rel = summ[f"reliability_{split}"]
     fig = go.Figure()
     colors = [tok["s1"], tok["s2"], tok["s3"], tok["s4"]]
