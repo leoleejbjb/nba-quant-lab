@@ -265,11 +265,14 @@ forecast whose dispersion depends on the predicted mean (fitted on the tuning se
 </section>""")
     rel = s.get("reliability_test", {})
     body.append(f"""<section><h2>Over/under reliability</h2>
-<div class="grid2"><figure>{reliability_svg(rel)}<figcaption>Simulated P(over) at five lines per player-game (the
-half-point line nearest the projection and 1-2 points either side), binned by decile, against how often the over
-hit.</figcaption></figure>
+<div class="grid2"><figure>{reliability_svg(rel)}<figcaption>Simulated P(over) at up to five lines per player-game
+(the half-point line nearest the projection and 1-2 points either side; lines below 0.5 are skipped), binned by
+decile, against how often the over hit.</figcaption></figure>
 <div class="callout"><h3>Reading it</h3><p>Points on the diagonal mean a stated 60% over happens 60% of the time.
-Mean gap, predicted minus observed (percentage points): {", ".join(f"{STAT_LABEL[k]} {100 * rel[f'{k}|sim_blend|ladder']['mean_gap']:+.1f}" for k in STATS if f"{k}|sim_blend|ladder" in rel)}.
+Mean gap, predicted minus observed, at the line nearest the projection (percentage points):
+{", ".join(f"{STAT_LABEL[k]} {100 * rel[f'{k}|sim_blend']['mean_gap']:+.1f}" for k in STATS if f"{k}|sim_blend" in rel)};
+pooled over the ladder, where errors of opposite sign partly cancel:
+{", ".join(f"{STAT_LABEL[k]} {100 * rel[f'{k}|sim_blend|ladder']['mean_gap']:+.1f}" for k in STATS if f"{k}|sim_blend|ladder" in rel)}.
 Every probability comes from the joint simulated games, so a two-leg parlay is the share of games in which both legs
 hit, never a product of marginals.</p></div></div></section>""")
     mrows = [("season_avg", "Season average"), ("l10", "Last-10 average"), ("ewma", "Decayed average"),

@@ -171,12 +171,14 @@ leads mean-revert. A *team* shooting night was included initially and calibratio
 possessions give a team-points SD of ~12.8; the residual SD of a good pregame model is ~11.5 including model error), so
 the simulator has two mean-reversion terms: a logit drift against the leading team (0.034 per 10 points of lead) and
 against a team scoring above its expected pace (0.034 per 10 points). These, the player-night SDs, a handful of
-nuisance multipliers (FT trips 0.895, steals 1.025, blocks 1.03, offensive rebounding odds 0.975, possession length
-1.0155, non-shooting fouls 0.88, 2P/3P logit offsets -0.035 / +0.05) and the usage exponent were set by matching
-league aggregates (per team-game on 200 tuning games: points +0.1, made twos +0.1, made threes -0.06, FTA +0.08,
-steals and blocks 0.0, possessions +0.1, OREB% 27.65% vs 27.59%), margin/total dispersion and player-level variance
-ratios / PIT histograms on 2023-24 samples. The simulator still takes about 1% more field-goal attempts per possession
-than real teams, so rebounds are ~2% high. **Usage is super-linear**: points MAE on 150 tuning games was
+nuisance multipliers (FT trips 0.918, non-shooting fouls 0.93, steals 1.064, blocks 1.05, offensive rebounding odds
+0.975, possession length 1.0124, 2P/3P logit offsets -0.035 / +0.005) and the usage exponent were set by matching
+league aggregates on the full 2023-24 backtest (a first fit on a 200-game sample did not hold on the full season and
+was replaced), margin/total dispersion and player-level variance ratios / PIT histograms. Check on 400 tuning games
+with the final values, simulated minus actual per team-game: points -0.02, made twos +0.01, made threes -0.04, FTA
++0.01, turnovers -0.03, steals -0.07, blocks +0.04, fouls +0.11, possessions -0.06. Two gaps remain: the simulator
+takes about 2% more two-point attempts per possession than real teams (makes match, so rebounds run ~1-2% high), and
+assists are about 2% low. **Usage is super-linear**: points MAE on 150 tuning games was
 4.571 / 4.440 / **4.406** / 4.457 / 4.588 for alpha = 0.7 / 1.0 / **1.3** / 1.6 / 1.9.
 
 **Accounting identities (asserted on every simulated game, `SimResult.check_invariants`, tested):**

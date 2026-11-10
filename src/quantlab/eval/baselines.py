@@ -258,7 +258,9 @@ def own_team_environment(d: pd.DataFrame) -> pd.DataFrame:
     out = t[["game_id", "team_id"]].copy()
     for c in ("team_ppp", "pace", "team_margin"):
         prev = g[c].transform(lambda v: v.shift(1).expanding().mean())
-        out[f"own_{c}"] = prev.fillna(t.groupby("season")[c].transform("mean"))
+        # a team's first game of a season: its previous game's value (pregame), never a season-wide mean
+        last = t.groupby("team_id")[c].shift(1)
+        out[f"own_{c}"] = prev.fillna(last).fillna(t[c].expanding().mean().shift(1)).fillna(t[c].iloc[0])
     return d[["game_id", "team_id"]].merge(out, on=["game_id", "team_id"], how="left")
 
 
@@ -266,17 +268,19 @@ def opponent_ablation(log=print) -> dict:
     """Do opponent / matchup features improve player projections out of sample? LightGBM with and without
     every piece of opponent information, same training protocol, test seasons.
 
-    Without opponent: no opponent defensive factors, the closed-form EB expectation recomputed with neutral
-    opponent factors, and the team-model environment (team PPP, opponent PPP, expected margin, pace - all of
-    which contain the opponent's ratings) replaced by the team's own season-to-date averages. The player's
-    own team's style factors (``own_off_*``) are kept in both variants."""
+    Nested design. *Without opponent*: the team's own season-to-date averages of its team-model environment
+    (expected PPP, pace, margin), the closed-form EB expectation with neutral opponent factors at that own pace,
+    and the player's own team's style factors (``own_off_*``). *With opponent* adds the game's team-model
+    environment (team PPP, opponent PPP, expected margin and pace, all of which contain the opponent's ratings),
+    the opponent's defensive style factors and the EB expectation with them. The gain also contains whatever the
+    team model's current own-team ratings know beyond the lagged averages (small after the first weeks)."""
     from ..config import TEST_SEASONS, TUNING_SEASON
     df = load_frame()
     seasons = [TUNING_SEASON, *TEST_SEASONS]
     d = add_model_inputs(df[df["played"] & df["season"].isin(seasons)].copy()).reset_index(drop=True)
     eb = eb_expectations(d)
-    eb0 = eb_expectations(d, neutral_opponent=True)
     own = own_team_environment(d)
+    eb0 = eb_expectations(d.assign(pace=own["own_pace"].to_numpy()), neutral_opponent=True)
     rcols = [c for c in d.columns if c.startswith("r_")]
     opp_cols = [c for c in d.columns if c.startswith("opp_def_")]
     own_cols = [c for c in d.columns if c.startswith("own_off_")]
@@ -285,10 +289,10 @@ def opponent_ablation(log=print) -> dict:
     plan = {TEST_SEASONS[0]: [TUNING_SEASON], TEST_SEASONS[1]: [TUNING_SEASON, TEST_SEASONS[0]]}
     out = {}
     for s_ in ["pts", "reb", "ast", "fg3m", "stl", "blk", "tov"]:
-        X_full = pd.concat([d[base_cols + env_cols + opp_cols].astype(float),
-                            eb[[s_]].rename(columns={s_: "eb_exp"})], axis=1)
         X_no = pd.concat([d[base_cols].astype(float), own[["own_team_ppp", "own_pace", "own_team_margin"]],
-                          eb0[[s_]].rename(columns={s_: "eb_exp"})], axis=1)
+                          eb0[[s_]].rename(columns={s_: "eb_exp_own"})], axis=1)
+        X_full = pd.concat([X_no, d[env_cols + opp_cols].astype(float),               # nested: X_no + opponent
+                            eb[[s_]].rename(columns={s_: "eb_exp"})], axis=1)
         y = d[s_].astype(float)
         res = {}
         test_rows = d["season"].isin(list(plan)).to_numpy()

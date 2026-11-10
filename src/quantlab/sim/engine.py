@@ -223,6 +223,7 @@ class GameSimulator:
                 t.players = sorted(t.players, key=lambda pl: (-pl.rotation, -pl.min_mean))[:MAX_PLAYERS]
         self.P = max(5, max(len(t.players) for t in self.teams))
         self.plan = None
+        self.dur_scale = 1.0          # per-game possession-length factor set by calibrate() (pace step)
         self._prepare()
 
     def _prepare(self) -> None:
@@ -351,7 +352,8 @@ class GameSimulator:
         prm[core.P_PERSIST] = p.rot_persist
         prm[core.P_NOISE] = p.rot_noise
         prm[core.P_INJ] = p.p_injury
-        prm[core.P_BASE_MEAN] = (mean_dur - c["poss_time"]["b_per_oreb"] * c["poss_time"]["oreb_per_poss"]) * p.duration_scale
+        prm[core.P_BASE_MEAN] = (mean_dur - c["poss_time"]["b_per_oreb"] * c["poss_time"]["oreb_per_poss"]) * \
+            p.duration_scale * self.dur_scale
         prm[core.P_SHAPE] = c["poss_time"]["gamma_shape"]
         prm[core.P_B_OREB] = c["poss_time"]["b_per_oreb"]
         prm[core.P_TECH] = c["tech_fta_per_team_game"] / max(self.g.pace, 1.0)
@@ -423,20 +425,29 @@ class GameSimulator:
                              track)
 
     def calibrate(self, n_pilot: int = 800, iters: int = 3, seed: int = 99, minutes: bool = True,
-                  environment: str = "none", env_weight: float = 1.0) -> dict:
-        """Calibrate planned minutes (and optionally the team environment) with short pilot runs.
+                  environment: str = "none", env_weight: float = 1.0, pace: bool = True) -> dict:
+        """Calibrate pace, planned minutes and (optionally) the team environment with short pilot runs.
 
+        pace: possession length is scaled so that simulated regulation possessions per team per 48 minutes equal
+        the game's pace (the team model's), in every environment - the late-game logic and end-of-period
+        truncation otherwise leave the simulator ~0.5% short of the team model's possessions.
         environment: 'none' (bottom-up), 'team' (match each team's target_ppp), or 'blend'
         (target = env_weight * team-model PPP + (1 - env_weight) * bottom-up PPP).
         """
         shift = np.array([self.teams[0].eff_shift, self.teams[1].eff_shift], dtype=float)
         plan = self.plan.copy()
+        info = {}
+        if pace and self.g.pace > 0:
+            *_, poss, periods, _, _ = self._run_raw(n_pilot, seed + 70, shift, plan, False)
+            n_ot = np.maximum(periods.astype(float) - 4.0, 0.0)
+            rate = float((poss.mean(axis=1) / (1.0 + 5.0 * n_ot / 48.0)).mean())
+            self.dur_scale *= rate / self.g.pace
+            info["pace_rate_before"] = rate
         # targets: rotation players their minutes if they play, fringe players their expected minutes per team
         # game. Pilot runs let every available rotation player play, so a questionable player's target and his
         # simulated mean are on the same basis (otherwise games he sits out would inflate his plan).
         want = self.min_mean.copy()
         p_pilot = np.where(self.rotation & (self.p_play > 0), 1.0, self.p_play)
-        info = {}
         for it in range(iters if minutes else 0):
             st, secs, score, *_ = self._run_raw(n_pilot, seed + it, shift, plan, False, p_play=p_pilot)
             sim_mean = secs.mean(axis=0) / 60.0

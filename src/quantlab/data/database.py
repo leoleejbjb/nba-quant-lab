@@ -65,9 +65,12 @@ def build_database(seasons=ALL_SEASONS, log=print) -> dict:
     pg["min"] = np.where(has_box, pg["box_seconds"].fillna(0) / 60.0, pg["min_rec"])
     pg["min_source"] = np.where(has_box, "official", "pbp")
     pg["played"] = pg["min"] > 0
-    # coaches / staff: a bench technical gives them an event but they never play
+    # coaches / staff: a bench technical gives them an event but they never play. Judged per row (a former
+    # player who now coaches is caught too): zero seconds, not in the official box, nothing but technicals
     ever = set(pg.loc[pg["played"], "person_id"])
-    staff = ~pg["person_id"].isin(ever) & ~pg["played"]
+    box_cols = [c for c in ("fga2", "fga3", "fta", "oreb", "dreb", "ast", "stl", "blk", "tov", "pf") if c in pg]
+    bench_only = ~pg["played"] & pg["box_seconds"].isna() & (pg[box_cols].sum(axis=1) == 0) & (pg["tech"] > 0)
+    staff = (~pg["person_id"].isin(ever) & ~pg["played"]) | bench_only
     n_staff = int(staff.sum())
     pg = pg[~staff].reset_index(drop=True)
     pg["game_date"] = pd.to_datetime(pg["game_date"])

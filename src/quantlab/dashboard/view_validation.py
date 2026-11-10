@@ -115,11 +115,16 @@ def render() -> None:
     fig.update_xaxes(tickformat=".0%", range=[0, 1])
     fig.update_yaxes(tickformat=".0%", range=[0, 1])
     st.plotly_chart(fig, use_container_width=True)
-    gaps = {s_: rel.get(f"{s_}|sim_blend|ladder", {}).get("mean_gap") for s_ in
-            ["pts", "reb", "ast", "fg3m", "pra", "stl", "blk", "tov"]}
-    if any(v is not None for v in gaps.values()):
-        st.caption("Mean predicted P(over) minus observed over rate, all lines (percentage points; 0 = calibrated): " +
-                   ", ".join(f"{k.upper()} {100 * v:+.1f}" for k, v in gaps.items() if v is not None) + ".")
+    stats8 = ["pts", "reb", "ast", "fg3m", "pra", "stl", "blk", "tov"]
+    near = {s_: rel.get(f"{s_}|sim_blend", {}).get("mean_gap") for s_ in stats8}
+    gaps = {s_: rel.get(f"{s_}|sim_blend|ladder", {}).get("mean_gap") for s_ in stats8}
+    if any(v is not None for v in near.values()):
+        st.caption("Mean predicted P(over) minus observed over rate (percentage points; 0 = calibrated). At the line "
+                   "nearest the projection: " + ", ".join(f"{k.upper()} {100 * v:+.1f}" for k, v in near.items()
+                                                          if v is not None) +
+                   ". Pooled over the ladder (up to five lines; lines below 0.5 are skipped, so errors of opposite "
+                   "sign partly cancel): " + ", ".join(f"{k.upper()} {100 * v:+.1f}" for k, v in gaps.items()
+                                                       if v is not None) + ".")
 
     st.subheader("Team forecasts: does player-level simulation help?")
     tm = summ["teams"][split]

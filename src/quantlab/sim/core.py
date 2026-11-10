@@ -538,11 +538,19 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
                 marks[1] = score[0] - score[1]
             if period >= 4 and score[0] != score[1]:
                 break
+            if period >= 12:             # safety valve after 8 tied overtimes: a decisive free throw, booked
+                tv = 0 if np.random.random() < 0.5 else 1      # to an on-court player so every identity holds
+                pl = lineup[tv, int(np.random.random() * 5)]
+                stats[tv, pl, FTA] += 1
+                stats[tv, pl, FTM] += 1
+                stats[tv, pl, PTS] += 1
+                score[tv] += 1
+                for k in range(5):
+                    stats[tv, lineup[tv, k], PM] += 1
+                    stats[1 - tv, lineup[1 - tv, k], PM] -= 1
+                break
             period += 1
             clock = pend
-            if period > 12:              # safety valve for absurd overtime chains
-                score[0 if np.random.random() < 0.5 else 1] += 1
-                break
             if period == 2 or period == 3:
                 offense = 1 - tip
             elif period == 4:
