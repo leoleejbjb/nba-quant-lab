@@ -126,7 +126,7 @@ def cmd_ablation(a) -> None:
     from .eval.baselines import opponent_ablation
     out = opponent_ablation()
     PATHS.ensure(PATHS.backtest)
-    (PATHS.backtest / "opponent_ablation.json").write_text(json.dumps(out, indent=1))
+    (PATHS.backtest / "opponent_ablation.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
 
 
 def cmd_topdown(a) -> None:
@@ -203,6 +203,11 @@ def cmd_sql(a) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # output redirected to a file or a pipe: UTF-8 (player names, the starter check mark) instead of failing on the
+    # Windows code page
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and not stream.isatty():
+            stream.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(prog="quantlab", description="NBA Quant Lab")
     sub = p.add_subparsers(dest="cmd", required=True)
     simple = {"database": cmd_database, "features": cmd_features, "team": cmd_team, "minutes": cmd_minutes,

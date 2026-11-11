@@ -165,7 +165,7 @@ def run_rates(log=print) -> dict:
     rf = build_rate_frame(feats, pg)
     params = tune_rates(rf, pg, games, log=log)
     PATHS.ensure(PATHS.models)
-    (PATHS.models / "rate_params.json").write_text(json.dumps(params, indent=2))
+    (PATHS.models / "rate_params.json").write_text(json.dumps(params, indent=2), encoding="utf-8")
     # rates for all candidate rows (played or not) so that the simulator can use them pregame
     allrows = feats.copy()
     rates = compute_rates(allrows, pg, games, params)

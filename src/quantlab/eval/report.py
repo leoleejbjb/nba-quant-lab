@@ -172,7 +172,7 @@ def team_comparison(tune_season: str, test_seasons, n_boot: int = 2000) -> dict:
     """Spread / total / win forecasts: team model, the three simulator environments (the shipped one is
     ``blend``, backtested as such) and, for reference, a post-hoc average of team-model and bottom-up means."""
     tp = pd.read_parquet(PATHS.models / "team_predictions.parquet")
-    integ = json.loads((PATHS.models / "integration.json").read_text()) if (PATHS.models / "integration.json").exists() else {}
+    integ = json.loads((PATHS.models / "integration.json").read_text(encoding="utf-8")) if (PATHS.models / "integration.json").exists() else {}
     w_star = float(integ.get("blend_weight", 0.5))
     out = {}
     from scipy.stats import norm
@@ -331,7 +331,7 @@ def choose_blend_weight(season: str = TUNING_SEASON, log=print) -> dict:
     out = {"blend_weight": w_star, "season": season, "games": int(len(d)), "curve": curve,
            "method": "argmin over w of margin RMSE + total RMSE of w*team-constrained + (1-w)*bottom-up means"}
     PATHS.ensure(PATHS.models)
-    (PATHS.models / "integration.json").write_text(json.dumps(out, indent=1))
+    (PATHS.models / "integration.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
     log(f"[blend weight] {season}: w = {w_star:.2f} (team-model share), {len(d)} games")
     return out
 
@@ -371,11 +371,11 @@ def run_report(log=print) -> dict:
                          "tuning_bottom_up": level_checks([TUNING_SEASON], "none")}
     ax = PATHS.models / "availability_experiment.json"
     if ax.exists():
-        summary["availability_experiment"] = {**json.loads(ax.read_text()), **availability_propagation()}
+        summary["availability_experiment"] = {**json.loads(ax.read_text(encoding="utf-8")), **availability_propagation()}
     summary["consistency"] = consistency_analysis()
     abl = PATHS.backtest / "opponent_ablation.json"
     if abl.exists():
-        summary["opponent_ablation"] = json.loads(abl.read_text())
+        summary["opponent_ablation"] = json.loads(abl.read_text(encoding="utf-8"))
     try:
         summary["participation"] = participation_analysis()
     except Exception as e:      # pragma: no cover
@@ -384,7 +384,7 @@ def run_report(log=print) -> dict:
         summary["cost"] = cost_benchmark()
     except Exception as e:      # pragma: no cover - benchmark is informative only
         summary["cost"] = {"error": str(e)}
-    (PATHS.backtest / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
+    (PATHS.backtest / "summary.json").write_text(json.dumps(summary, indent=1, default=float), encoding="utf-8")
     return summary
 
 
@@ -397,7 +397,7 @@ def availability_propagation() -> dict:
     from .baselines import add_model_inputs, eb_expectations, load_frame
     pr = pd.read_parquet(path)
     df = load_frame()
-    season = json.loads((PATHS.models / "availability_experiment.json").read_text())["season"]
+    season = json.loads((PATHS.models / "availability_experiment.json").read_text(encoding="utf-8"))["season"]
     d = add_model_inputs(df[df["played"] & (df["season"] == season)].copy())
     d = d.merge(pr, on=["game_id", "person_id"], how="inner").reset_index(drop=True)
     out = {"eb_n": int(len(d))}

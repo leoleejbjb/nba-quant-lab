@@ -175,10 +175,11 @@ def run_minutes(log=print) -> pd.DataFrame:
     # final model for live use: trained on everything up to the last season
     played = f[f["played"] & (f["season"] > sorted(f["season"].unique())[0])]
     for name, cols in (("lineups_known", FEATURES + STARTER_FEATURES), ("pregame", FEATURES_PRE)):
-        _fit(played, cols).save_model(str(PATHS.models / f"minutes_gbm_{name}.txt"))
+        # written from Python (LightGBM's own file I/O breaks on non-ASCII Windows paths)
+        (PATHS.models / f"minutes_gbm_{name}.txt").write_text(_fit(played, cols).model_to_string(), encoding="utf-8")
     imp = pd.Series(models["2025-26"]["lineups_known"].feature_importance("gain"),
                     index=FEATURES + STARTER_FEATURES).sort_values(ascending=False)
-    (PATHS.models / "minutes_importance.json").write_text(json.dumps((imp / imp.sum()).round(4).to_dict(), indent=2))
+    (PATHS.models / "minutes_importance.json").write_text(json.dumps((imp / imp.sum()).round(4).to_dict(), indent=2), encoding="utf-8")
     return ev
 
 
@@ -198,7 +199,7 @@ def save_season_models(log=print) -> None:
     seasons = sorted(played["season"].unique())
     for s in seasons[2:]:
         train = played[(played["season"] < s) & (played["season"] > seasons[0])]
-        _fit(train, cols).save_model(str(PATHS.models / f"minutes_gbm_{s}.txt"))
+        (PATHS.models / f"minutes_gbm_{s}.txt").write_text(_fit(train, cols).model_to_string(), encoding="utf-8")
         log(f"[minutes] saved model for {s} ({len(train):,} rows)")
 
 
@@ -260,6 +261,6 @@ def exact_availability_experiment(season: str = "2023-24", log=print) -> dict:
     pd.DataFrame({"game_id": common.get_level_values(0), "person_id": common.get_level_values(1),
                   **{f"pred_{k}": v.reindex(common).to_numpy() for k, v in preds.items()}}).to_parquet(
         PATHS.models / "availability_preds.parquet", index=False)
-    (PATHS.models / "availability_experiment.json").write_text(json.dumps(out, indent=2))
+    (PATHS.models / "availability_experiment.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
     log(f"[minutes] inactive-list experiment {season}: {out}")
     return out

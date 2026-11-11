@@ -54,7 +54,7 @@ def _json_default(o):
 
 def write_json(obj, path) -> None:
     tmp = path.with_suffix(".tmp.json")
-    tmp.write_text(json.dumps(obj, indent=2, default=_json_default))
+    tmp.write_text(json.dumps(obj, indent=2, default=_json_default), encoding="utf-8")
     os.replace(tmp, path)
 
 

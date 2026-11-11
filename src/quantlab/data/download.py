@@ -59,7 +59,7 @@ def _download(url: str, dest: Path, retries: int = 4, timeout: float = 120.0) ->
 def fetch(files: list[RawFile], raw_dir: Path, log: Callable[[str], None] = print) -> dict:
     raw_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = raw_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
     for rf in files:
         dest = raw_dir / rf.filename
         if dest.exists() and sha256(dest) == rf.sha256:
@@ -77,7 +77,7 @@ def fetch(files: list[RawFile], raw_dir: Path, log: Callable[[str], None] = prin
             "verified_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         }
     tmp = manifest_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(manifest, indent=2))
+    tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     os.replace(tmp, manifest_path)
     log(f"[fetch] {len(files)} files verified in {raw_dir}")
     return manifest

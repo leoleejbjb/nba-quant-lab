@@ -64,6 +64,6 @@ def test_player_features_use_only_earlier_games():
 @pytest.mark.skipif(not (PATHS.processed("2023-24") / "quality.json").exists(), reason="needs built data")
 def test_reconstruction_matches_official_box_scores():
     import json
-    q = json.loads((PATHS.processed("2023-24") / "quality.json").read_text())["official_box"]
+    q = json.loads((PATHS.processed("2023-24") / "quality.json").read_text(encoding="utf-8"))["official_box"]
     assert q["minutes_within_1s"] > 0.999 and q["pts_exact"] > 0.999 and q["plus_minus_exact"] > 0.995
     assert q["all_stats_exact"] > 0.99

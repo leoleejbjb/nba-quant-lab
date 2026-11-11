@@ -291,5 +291,5 @@ def compute_constants(log=print) -> dict:
         f"team reb share {c['team_reb_share']:.3f}, non-FT def fouls/play {c['nonft_def_fouls_per_opp_play']:.4f}, "
         f"tech FTA/team-game {c['tech_fta_per_team_game']:.3f}")
     PATHS.ensure(PATHS.models)
-    (PATHS.models / "sim_constants.json").write_text(json.dumps(c, indent=1))
+    (PATHS.models / "sim_constants.json").write_text(json.dumps(c, indent=1), encoding="utf-8")
     return c

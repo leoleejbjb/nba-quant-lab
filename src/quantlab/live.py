@@ -36,7 +36,8 @@ class MinutesReprojector:
         seasons have no walk-forward model, and the all-seasons model would use future games)."""
         if season not in self.models:
             path = PATHS.models / f"minutes_gbm_{season}.txt"
-            self.models[season] = lgb.Booster(model_file=str(path)) if path.exists() else None
+            self.models[season] = (lgb.Booster(model_str=path.read_text(encoding="utf-8"))
+                                   if path.exists() else None)
         return self.models[season]
 
     def __call__(self, game_id: int, team, removed: list) -> None:
@@ -163,7 +164,7 @@ def default_blend_weight() -> float:
     path = PATHS.models / "integration.json"
     if path.exists():
         import json
-        return float(json.loads(path.read_text()).get("blend_weight", 0.5))
+        return float(json.loads(path.read_text(encoding="utf-8")).get("blend_weight", 0.5))
     return 0.5
 
 

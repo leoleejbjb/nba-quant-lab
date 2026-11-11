@@ -217,7 +217,7 @@ off_lo = sum(int((bc[f"{s}_diff"] > 0).sum()) for s in SIGNED)
 blk_hi, blk_n = int((bc["blk_diff"] < 0).sum()), int((bc["blk_diff"] != 0).sum())
 assert off_hi > off_lo and 2 * blk_hi > blk_n                       # lean toward the official box being higher
 # EB rate stability (data/models/rate_params.json, chosen on 2023-24)
-rp = json.loads((ROOT / "data/models/rate_params.json").read_text())
+rp = json.loads((ROOT / "data/models/rate_params.json").read_text(encoding="utf-8"))
 SHOOT = {"fg3": "threes", "fg2": "twos", "ft": "free throws"}
 assert max(SHOOT, key=lambda k: rp[k]["k"]) == "fg3"
 FAST = {"usage": "usage", "fga3_share": "shot profile", "ast2_share": "assisted share of twos", "ast_rate": "assist rate"}
@@ -230,7 +230,7 @@ q_range = [N[f"q.{s}.all_stats_exact"] for s in ("2020-21", "2021-22", "2022-23"
 # end of games: tied teams' final-four-second make rates, raw (2021-24, the selection in sim.constants.end_game:
 # shots with <= 4 s left in the 4th quarter / overtime, score tied before the shot) and as the simulator uses them
 TIED_RAW = (37 / 145, 24 / 127)
-const = json.loads((ROOT / "data/models/sim_constants.json").read_text())
+const = json.loads((ROOT / "data/models/sim_constants.json").read_text(encoding="utf-8"))
 tied_sim = const["end_game"]["heave_fg"][const["end_game"]["lead_index"].index("tied")]
 # known player-level biases (test seasons, shipped blend)
 BIAS_STATS = ("blk", "reb", "fg3m", "fta", "pf", "stl", "ast")
@@ -544,5 +544,5 @@ limitations = f"""
 if ARGS.check:
     print("docs/REPORT.md: every check passed (not written)")
 else:
-    (ROOT / "docs" / "REPORT.md").write_text(report + review + limitations)
+    (ROOT / "docs" / "REPORT.md").write_text(report + review + limitations, encoding="utf-8", newline="\n")
     print("docs/REPORT.md rendered", len(report + review + limitations))

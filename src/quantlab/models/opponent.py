@@ -117,5 +117,5 @@ def run_opponent(log=print) -> dict:
     fac, tuned = compute_factors(t, games, log=log)
     PATHS.ensure(PATHS.models)
     fac.to_parquet(PATHS.models / "team_factors.parquet", index=False)
-    (PATHS.models / "team_factor_params.json").write_text(json.dumps(tuned, indent=2))
+    (PATHS.models / "team_factor_params.json").write_text(json.dumps(tuned, indent=2), encoding="utf-8")
     return tuned

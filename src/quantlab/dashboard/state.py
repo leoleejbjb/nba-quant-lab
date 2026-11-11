@@ -47,7 +47,7 @@ def run_projection(game_id: int, n: int, environment: str, scenario: Scenario | 
 
 def backtest_summary() -> dict | None:
     path = PATHS.backtest / "summary.json"
-    return json.loads(path.read_text()) if path.exists() else None
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
 def select_game(game_id: int) -> None:

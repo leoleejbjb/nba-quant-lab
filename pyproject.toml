@@ -7,7 +7,7 @@ name = "quantlab"
 version = "0.1.0"
 description = "NBA Quant Lab: player box-score forecasting and possession-level game simulation built on reconstructed NBA play-by-play."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"   # numpy < 2.3 has no wheels for Python 3.14
 license = { text = "MIT" }
 dependencies = [
   "pandas>=2.2,<3",

@@ -102,7 +102,7 @@ assert len(mae_wins) == 6 and "stl" not in mae_wins and "blk" not in mae_wins
 q_old = [N[f"q.{s}.all_stats_exact"] for s in ("2020-21", "2021-22", "2022-23")]
 q_all = q_old + [N["q.all_stats_exact"]]
 m_pre_gain = 1 - m_pre / m_sa
-summ = json.loads(SUMMARY.read_text())
+summ = json.loads(SUMMARY.read_text(encoding="utf-8"))
 # points: the shipped simulation is the best calibrated and has the best log score; CRPS a near tie; PRA favours GBM
 pit_pts = {m: N[f"{T}.{m}.pts.pit_dev"] for m in mae}
 log_pts = {m: N[f"{T}.{m}.pts.logscore"] for m in mae}
@@ -223,12 +223,12 @@ headline = [
 ]
 
 # ---------------------------------------------------------------- write
-readme = (ROOT / "README.md").read_text()
+readme = (ROOT / "README.md").read_text(encoding="utf-8")
 start = readme.index("## Results (walk-forward")
 end = readme.index("## Quick start")
 if ARGS.check:
     print("README results / docs/headline.json: every check passed (not written)")
 else:
-    (ROOT / "README.md").write_text(readme[:start] + readme_block + readme[end:])
-    (ROOT / "docs" / "headline.json").write_text(json.dumps(headline, indent=1))
+    (ROOT / "README.md").write_text(readme[:start] + readme_block + readme[end:], encoding="utf-8", newline="\n")
+    (ROOT / "docs" / "headline.json").write_text(json.dumps(headline, indent=1), encoding="utf-8", newline="\n")
     print("README results and headline.json rendered")

@@ -83,8 +83,8 @@ backtest - with the advantage that it can be checked against what happened ([doc
 ## Quick start
 
 ```bash
-git clone <this repo> && cd nba-quant-lab
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"     # Python 3.10+
+git clone https://github.com/leoleejbjb/nba-quant-lab && cd nba-quant-lab
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"     # Python 3.10 - 3.13
 ```
 
 ```bash
@@ -96,6 +96,23 @@ make docs        # re-render README results, docs/REPORT.md and docs/report.html
 make dashboard   # http://localhost:8501
 make test        # 38 tests
 ```
+
+**Windows (PowerShell).** `make.ps1` runs the same targets. Install [Git](https://git-scm.com/download/win), the
+[Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) (numba and LightGBM need
+it; many PCs already have it) and Python 3.13 from python.org - the Windows installer (64-bit), with "Add python.exe to
+PATH" ticked (3.10 - 3.13 work; 3.14 does not, because numpy < 2.3 has no wheels for it). Then:
+
+```powershell
+git clone https://github.com/leoleejbjb/nba-quant-lab
+cd nba-quant-lab
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force   # let this window run local scripts
+.\make.ps1 install
+.\make.ps1 all          # data, models, backtest, report (~2 h on 4 cores, ~1 GB of disk)
+.\make.ps1 dashboard    # http://localhost:8501
+```
+
+`.\make.ps1 help` lists every target; `.\make.ps1 quantlab <command> [options]` runs any `quantlab` command (for
+example `.\make.ps1 quantlab project --game-id 22501132`).
 
 Project one game from the command line (pregame inputs - earlier games and the starting five - except that
 availability is taken from who appeared in the game, the inactive-list stand-in described in Results 2):
@@ -164,6 +181,7 @@ src/quantlab/
 scripts/       run_backtests.py, make_report_page.py (docs/report.html), docs/ (README results and REPORT renderers),
                package.sh
 tests/         38 tests: PBP rules, leakage, simulator invariants, props, scenarios, review regressions
+Makefile, make.ps1   pipeline targets (make on Linux/macOS, PowerShell on Windows)
 docs/          REPORT.md, METHODOLOGY.md, DATA.md, FINDINGS_DATA.md (auto-generated), screenshots
 ```
 

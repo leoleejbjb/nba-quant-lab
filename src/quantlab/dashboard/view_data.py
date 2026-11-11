@@ -17,7 +17,7 @@ def render() -> None:
         p = PATHS.processed(s) / "quality.json"
         if not p.exists():
             continue
-        q = json.loads(p.read_text())
+        q = json.loads(p.read_text(encoding="utf-8"))
         o = q.get("official_box", {})
         rows.append({"Season": s, "Games": q["games"], "Usable games": q["games_ok"],
                      "Valid lineup time": q["valid_time_share"], "Player-games": q["player_games_played"],
@@ -35,7 +35,7 @@ def render() -> None:
                "internal consistency (points conserved, 5 x game length minutes per team).")
     ax_path = PATHS.models / "availability_experiment.json"
     if ax_path.exists():
-        ax = json.loads(ax_path.read_text())
+        ax = json.loads(ax_path.read_text(encoding="utf-8"))
         st.subheader("Who is available: the inactive-list stand-in")
         st.markdown(
             f"The injury report / inactive list is public before tip-off but is in the sources only for 2020-24. "

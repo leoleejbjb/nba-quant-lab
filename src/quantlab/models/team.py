@@ -184,7 +184,7 @@ def run_team_model(cfg: TeamModelConfig | None = None, log=print) -> pd.DataFram
     PATHS.ensure(PATHS.models)
     pr.to_parquet(PATHS.models / "team_predictions.parquet", index=False)
     res = {s: evaluate(pr, [s]) for s in sorted(pr["season"].unique())}
-    (PATHS.models / "team_model_eval.json").write_text(json.dumps({"config": cfg.__dict__, "by_season": res}, indent=2))
+    (PATHS.models / "team_model_eval.json").write_text(json.dumps({"config": cfg.__dict__, "by_season": res}, indent=2), encoding="utf-8")
     for s, r in res.items():
         log(f"[team] {s}: margin MAE {r['margin_mae']:.2f} RMSE {r['margin_rmse']:.2f} | total MAE {r['total_mae']:.2f} "
             f"RMSE {r['total_rmse']:.2f} bias {r['total_bias']:+.2f} | logloss {r['win_logloss']:.4f} acc {r['win_accuracy']:.3f}")

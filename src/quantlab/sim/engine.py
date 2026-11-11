@@ -125,7 +125,7 @@ class SimParams:
 
 
 def load_constants() -> dict:
-    return json.loads((PATHS.models / "sim_constants.json").read_text())
+    return json.loads((PATHS.models / "sim_constants.json").read_text(encoding="utf-8"))
 
 
 @dataclass

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def load(path=None) -> dict:
-    s = json.loads(Path(path or ROOT / "data/backtest/summary.json").read_text())
+    s = json.loads(Path(path or ROOT / "data/backtest/summary.json").read_text(encoding="utf-8"))
     N = {}
     for split in ("test", "tuning"):
         pc = pd.DataFrame(s[f"players_{split}"])
@@ -81,7 +81,7 @@ def load(path=None) -> dict:
     for season in ("2020-21", "2021-22", "2022-23", "2023-24"):
         p = ROOT / f"data/processed/{season}/quality.json"
         if p.exists():
-            q = json.loads(p.read_text()).get("official_box", {})
+            q = json.loads(p.read_text(encoding="utf-8")).get("official_box", {})
             N.update({f"q.{season}.{k}": v for k, v in q.items() if isinstance(v, (int, float))})
     N.update({f"q.{k[len('q.2023-24.'):]}": v for k, v in list(N.items()) if k.startswith("q.2023-24.")})
     return N
