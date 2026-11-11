@@ -1,4 +1,4 @@
-.PHONY: install data models backtest report docs test dashboard all clean-data
+.PHONY: install data models backtest report docs live test dashboard all clean-data
 
 PY ?= .venv/bin/python
 QL ?= .venv/bin/quantlab
@@ -24,6 +24,9 @@ report:             ## baselines, gradient boosting, matchup ablation, team-firs
 docs:               ## re-render the README results block, docs/REPORT.md, docs/headline.json and docs/report.html from the summary
 	$(PY) scripts/docs/render_report.py --check && $(PY) scripts/docs/render_docs.py --check
 	$(PY) scripts/docs/render_report.py && $(PY) scripts/docs/render_docs.py && $(PY) scripts/make_report_page.py
+
+live:               ## current season: fetch new games from cdn.nba.com, rebuild it, refresh features and models (frozen parameters; run where the CDN answers)
+	$(QL) live-update
 
 test:
 	$(PY) -m pytest

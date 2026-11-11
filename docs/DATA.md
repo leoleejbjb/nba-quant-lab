@@ -73,19 +73,46 @@ lineup project.
   to `data/models/availability_experiment.json`; `quantlab report` adds the points propagation to
   `data/backtest/summary.json`).
 
-## Live 2026-27 data
+## The current season (2026-27)
 
-The current season is not in the pinned mirrors. `cdn.nba.com` (schedule, live box scores and play-by-play) was added
-to the environment's network allowlist, but the NBA's CDN answered **"Access Denied"** to this client; per project
-policy a refusal is reported and never retried under a different identity (e.g. a spoofed browser). The dashboard
-therefore defines "upcoming games" by an as-of date: every game on that date is projected from earlier games plus
-who appeared and who started in it, the stand-in for the pregame inactive list and announced starting lineups (see
-Availability; this makes the projections slightly optimistic compared with a true live projection). Projecting a past
-date this way has the advantage that results can be checked. When newer seasons are published by the mirror, add the
-file's checksum to `PBP_SHA256` in `sources.py` and move the pinned mirror commit (`SHUFINSKIY` in `sources.py`, and
-the Sources table above) to one that contains it (a fresh fetch then re-verifies the older files at that commit), add
-the season to `ALL_SEASONS` in `config.py` (used by `fetch`, `build` and `database`), and extend the hard-coded season
-lists in `models/minutes.py` (`run_minutes`) and `dashboard/state.py` (`SEASONS`).
+The current season is not in the pinned mirrors; `quantlab live-update` (`make live`, `.\make.ps1 live`) fetches it from
+the NBA's live CDN, the feed the play-by-play mirror archives once a season is over, so it is reconstructed by the
+same code:
+
+| File | URL | Stored as |
+|---|---|---|
+| League schedule (dates, tip-off times, teams, status, final scores) | `cdn.nba.com/static/json/staticData/scheduleLeagueV2.json` | `data/raw/live/2026-27/schedule.json.gz` |
+| Play-by-play of each finished regular-season game | `cdn.nba.com/static/json/liveData/playbyplay/playbyplay_<game id>.json` | `data/raw/live/2026-27/pbp/<game id>.json.gz` |
+
+* **Not pinned**: the season is still being played, so there is no fixed checksum to verify against. Each file's
+  SHA-256, URL and fetch time go to `data/raw/live/2026-27/manifest.json`, and a game file is kept only if it is
+  complete: the right game id, a 'game end' action, at least four periods and clocks that parse (a game in progress or
+  a truncated file is tried again on the next update). Games are downloaded again for 36 hours after tip-off
+  (`--refetch-hours`) to pick up the league's post-game stat corrections; older ones are read from disk.
+* **Checks**: there are no official box scores for the season, so the schedule is the reference for each game's date
+  and home team, and a game whose reconstructed final score differs from the schedule's is flagged as not usable for
+  lineup-level work (like the pinned seasons' games that fail a check). `data/processed/2026-27/quality.json` (`live`) counts
+  the scheduled and finished games, the games built, missing or incomplete play-by-play and score mismatches; the
+  dashboard's Data & methods page shows it.
+* **Schedule tables**: `data/processed/all/schedule.parquet` (every regular-season game of the season, with tip-off
+  time, status and whether it was built) and `team_schedule.parquet` (one row per team and game, with rest days and
+  back-to-backs computed on the whole schedule, so an upcoming game's rest is known; postponed games and games whose
+  teams are not known yet are left out). Unplayed games never enter `games`, `player_games` or `team_games`; the
+  ones in the next 10 days after the last finished game (`QUANTLAB_UPCOMING_DAYS`) get pregame rows in the feature
+  store and the models (METHODOLOGY, section 11).
+* **Access policy**: requests identify the program honestly (the same User-Agent as every download here, with a
+  one-second pause between game files), and an access refusal (HTTP 401/403/407/451) stops the update: it is reported
+  and never retried under another identity. This build environment was refused ("Access Denied"), so the live path
+  was exercised by a rehearsal instead: `scripts/rehearse_live.py` writes a finished season (2025-26) in the live
+  format from the pinned mirror (games before a cutoff final, the rest scheduled; a test checks that the live reader
+  reproduces the mirror's events exactly) and runs the real `quantlab live-update --skip-fetch` on it (results in
+  METHODOLOGY, section 11). On a desktop computer the CDN normally answers; cloud machines are often refused.
+* **When the season changes**: set `QUANTLAB_LIVE_SEASON` to the new season (or change `LIVE_SEASON` in `config.py`).
+  The finished season stays in the database, built from the files already fetched (`quantlab build --season 2026-27`
+  rebuilds it). Once the mirror publishes it, pin it like the others: add the file's checksum to `PBP_SHA256` in
+  `sources.py` and move the pinned mirror commit (`SHUFINSKIY` in `sources.py`, and the Sources table above) to one
+  that contains it (a fresh fetch then re-verifies the older files at that commit), and add the season to
+  `PINNED_SEASONS` in `config.py`.
 
 ## Terms
 

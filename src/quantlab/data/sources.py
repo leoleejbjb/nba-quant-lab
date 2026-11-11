@@ -9,10 +9,11 @@
   invisible period starters. They are never used as same-game model inputs.
 
 The underlying statistics belong to NBA.com (Terms of Use: personal,
-non-commercial use). The official endpoints are not reachable from the build
-environment (cdn.nba.com answers "Access Denied"); nothing here attempts to
-bypass that. The same pinned files (and checksums for 2023-24 .. 2025-26) are
-used by the FiveMan lineup project.
+non-commercial use). The current season is not pinned: ``data.cdn`` fetches it
+from cdn.nba.com (``quantlab live-update``). That CDN refused the build
+environment ("Access Denied"); nothing here attempts to bypass a refusal. The
+same pinned files (and checksums for 2023-24 .. 2025-26) are used by the
+FiveMan lineup project.
 """
 
 from __future__ import annotations

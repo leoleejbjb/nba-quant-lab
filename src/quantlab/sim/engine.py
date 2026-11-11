@@ -82,6 +82,7 @@ class GameSpec:
     away: TeamSpec
     pace: float = 99.0                 # expected possessions per team per 48 minutes
     league: dict = field(default_factory=dict)
+    meta: dict = field(default_factory=dict)     # how the inputs were built (mode, starters, availability)
 
 
 @dataclass

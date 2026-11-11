@@ -16,6 +16,11 @@ Tables written to ``data/processed/all/`` (also exposed as DuckDB views by
 * ``team_games``    team box score with the opponent's columns joined (``opp_*``), rest days.
 * ``games``         one row per game.
 * ``players``       one row per player: name, career totals, last team.
+* ``schedule``, ``team_schedule``  the live season's schedule (one row per game / per team-game, with rest days and
+  back-to-backs over the full schedule); ``built`` marks games reconstructed into the tables above. Unplayed games
+  are never written into ``games`` / ``player_games`` / ``team_games``.
+
+The database holds the pinned seasons plus the live season once it has been built (``config.db_seasons``).
 """
 
 from __future__ import annotations
@@ -23,8 +28,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ..config import ALL_SEASONS, PATHS
+from ..config import LIVE_SEASON, PATHS, UPCOMING_DAYS, db_seasons
 from .build import _write
+
+SCHEDULE_TEAM_COLS = ["game_id", "team_id", "opp_team_id", "is_home", "season", "game_date", "tip_utc", "rest_days",
+                      "b2b", "status", "built"]
 
 def availability_status(comment: pd.Series, box_seconds: pd.Series) -> pd.Series:
     """played / dnp_cd (dressed, unused) / out. 'DND - Coach's Decision' (did not dress) is out."""
@@ -34,7 +42,46 @@ def availability_status(comment: pd.Series, box_seconds: pd.Series) -> pd.Series
     return pd.Series(out, index=comment.index)
 
 
-def build_database(seasons=ALL_SEASONS, log=print) -> dict:
+def build_schedule_tables(seasons, out_dir) -> int:
+    """all/schedule.parquet and all/team_schedule.parquet from the per-season schedules (live season only)."""
+    paths = [PATHS.processed(s) / "schedule.parquet" for s in seasons]
+    scheds = [pd.read_parquet(p) for p in paths if p.exists()]
+    if not scheds:
+        for name in ("schedule", "team_schedule"):
+            (out_dir / f"{name}.parquet").unlink(missing_ok=True)
+        return 0
+    sc = pd.concat(scheds, ignore_index=True)
+    sc["game_date"] = pd.to_datetime(sc["game_date"])
+    known = sc[(sc["home_team_id"] > 0) & (sc["away_team_id"] > 0) & ~sc["status"].isin(["tbd", "postponed"])]
+    keep = ["game_id", "season", "game_date", "tip_utc", "status", "built"]
+    home = known[keep].assign(team_id=known["home_team_id"], opp_team_id=known["away_team_id"], is_home=True)
+    away = known[keep].assign(team_id=known["away_team_id"], opp_team_id=known["home_team_id"], is_home=False)
+    ts = pd.concat([home, away], ignore_index=True).sort_values(["team_id", "game_date", "game_id"])
+    prev = ts.groupby(["team_id", "season"])["game_date"].shift(1)
+    ts["rest_days"] = (ts["game_date"] - prev).dt.days.fillna(7).clip(upper=7)   # the rule used for team_games
+    ts["b2b"] = ts["rest_days"] == 1
+    _write(sc, out_dir / "schedule.parquet")
+    _write(ts[SCHEDULE_TEAM_COLS].reset_index(drop=True), out_dir / "team_schedule.parquet")
+    return int(len(sc))
+
+
+def upcoming_team_games(horizon_days: int = UPCOMING_DAYS) -> pd.DataFrame:
+    """Team-games of the live season that are not built yet (scheduled, in progress, or final without a usable
+    play-by-play file) and are dated no later than ``horizon_days`` after its last built game: the games that get
+    pregame projections."""
+    p = PATHS.processed("all") / "team_schedule.parquet"
+    if not p.exists():
+        return pd.DataFrame(columns=SCHEDULE_TEAM_COLS)
+    ts = pd.read_parquet(p)
+    ts = ts[ts["season"] == LIVE_SEASON]
+    built = ts[ts["built"]]
+    start = built["game_date"].max() if len(built) else ts["game_date"].min() - pd.Timedelta(days=1)
+    up = ts[~ts["built"] & (ts["game_date"] <= start + pd.Timedelta(days=horizon_days))]
+    return up.reset_index(drop=True)
+
+
+def build_database(seasons=None, log=print) -> dict:
+    seasons = tuple(seasons) if seasons is not None else db_seasons()
     out_dir = PATHS.processed("all")
     PATHS.ensure(out_dir)
     pgs, tgs, gms, avs, names = [], [], [], [], []
@@ -69,7 +116,8 @@ def build_database(seasons=ALL_SEASONS, log=print) -> dict:
     # player who now coaches is caught too): zero seconds, not in the official box, nothing but technicals
     ever = set(pg.loc[pg["played"], "person_id"])
     box_cols = [c for c in ("fga2", "fga3", "fta", "oreb", "dreb", "ast", "stl", "blk", "tov", "pf") if c in pg]
-    bench_only = ~pg["played"] & pg["box_seconds"].isna() & (pg[box_cols].sum(axis=1) == 0) & (pg["tech"] > 0)
+    no_box = pg["box_seconds"].isna() if "box_seconds" in pg else pd.Series(True, index=pg.index)
+    bench_only = ~pg["played"] & no_box & (pg[box_cols].sum(axis=1) == 0) & (pg["tech"] > 0)
     staff = (~pg["person_id"].isin(ever) & ~pg["played"]) | bench_only
     n_staff = int(staff.sum())
     pg = pg[~staff].reset_index(drop=True)
@@ -123,9 +171,10 @@ def build_database(seasons=ALL_SEASONS, log=print) -> dict:
     for name, df in [("player_games", pg), ("team_games", tg), ("games", games), ("availability", av),
                      ("players", players)]:
         _write(df, out_dir / f"{name}.parquet")
+    n_sched = build_schedule_tables(seasons, out_dir)
     summary = {"player_games": int(len(pg)), "played": int(pg["played"].sum()), "games": int(len(games)),
                "players": int(len(players)), "seasons": list(seasons),
-               "availability_rows": int(len(av)), "staff_rows_dropped": n_staff,
+               "availability_rows": int(len(av)), "staff_rows_dropped": n_staff, "scheduled_games": n_sched,
                "status_counts": {k: int(v) for k, v in av["status"].value_counts().items()}}
     log(f"[database] {summary}")
     return summary

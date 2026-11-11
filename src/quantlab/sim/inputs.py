@@ -25,12 +25,18 @@ from the walk-forward team models. Nothing here reads a box-score number from th
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 
 from ..config import PATHS
-from ..features.asof import FRINGE_P_FLOOR
+from ..features.asof import FRINGE_P_FLOOR, PRESUMED_AVAILABLE_STREAK, streak_bucket
 from .engine import DEF_FACTORS, MAX_PLAYERS, RATE_KEYS, GameSpec, PlayerSpec, TeamSpec
+
+
+class PregameInputsMissing(RuntimeError):
+    """An unplayed game without pregame rows (outside the projection horizon, or inputs not rebuilt)."""
 
 
 class InputStore:
@@ -39,12 +45,19 @@ class InputStore:
     def __init__(self):
         allp = PATHS.processed("all")
         self.games = pd.read_parquet(allp / "games.parquet").set_index("game_id")
+        sp = allp / "schedule.parquet"         # the live season's schedule (unplayed games included)
+        self.schedule = pd.read_parquet(sp).set_index("game_id") if sp.exists() else None
+        pp = PATHS.features / "availability_priors.json"
+        self.priors = json.loads(pp.read_text(encoding="utf-8"))["p_appear"] if pp.exists() else {}
         self.pg = pd.read_parquet(allp / "player_games.parquet",
                                   columns=["game_id", "person_id", "team_id", "name", "team", "played", "min",
                                            "starter", "game_date", "season"])
-        feats = pd.read_parquet(PATHS.features / "player_asof.parquet",
-                                columns=["game_id", "person_id", "team_id", "game_date", "exp_min", "base_min",
-                                         "rotation", "played", "starter", "season_min_avg", "min_l10"])
+        want = ["game_id", "person_id", "team_id", "game_date", "exp_min", "base_min", "rotation", "played",
+                "starter", "season_min_avg", "min_l10", "rotation_pre", "scheduled", "missed_streak", "starts_m20",
+                "gp_m20"]
+        import pyarrow.parquet as pq
+        have = set(pq.ParquetFile(PATHS.features / "player_asof.parquet").schema_arrow.names)
+        feats = pd.read_parquet(PATHS.features / "player_asof.parquet", columns=[c for c in want if c in have])
         self.feats = feats
         self.rates = pd.read_parquet(PATHS.models / "player_rates.parquet")
         self.rate_cols = [f"r_{k}" for k in RATE_KEYS]
@@ -60,6 +73,8 @@ class InputStore:
         daily = tg.groupby("game_date")[["tov", "poss"]].sum().sort_index()
         roll = daily.rolling(60, min_periods=1).sum().shift(1).bfill()
         self.lg_tov = (roll["tov"] / roll["poss"]).to_dict()
+        self.lg_tov_dates = np.array(sorted(daily.index), dtype="datetime64[ns]")
+        self.lg_tov_after = (daily.rolling(60, min_periods=1).sum()).pipe(lambda r: (r["tov"] / r["poss"])).to_numpy()
         self.by_game = {g: d for g, d in self.feats.groupby("game_id")}
         self.rates_by_game = {g: d.set_index("person_id") for g, d in self.rates.groupby("game_id")}
         self.minutes_by_game = ({g: d.set_index("person_id") for g, d in self.minutes.groupby("game_id")}
@@ -72,6 +87,36 @@ class InputStore:
         played = self.pg[self.pg["played"]].sort_values("game_date")
         self.played_by_person = {p: (d["game_date"].to_numpy(), d["team_id"].to_numpy())
                                  for p, d in played.groupby("person_id")}
+
+    # ------------------------------------------------------------------ games: built or scheduled
+    def is_final(self, game_id: int) -> bool:
+        """Built from its play-by-play (a finished game); otherwise an unplayed game of the live season."""
+        return int(game_id) in self.games.index
+
+    def game_row(self, game_id: int) -> pd.Series:
+        """The game's row: the built game, else its schedule row (date, tip time, teams, status)."""
+        gid = int(game_id)
+        if gid in self.games.index:
+            return self.games.loc[gid]
+        if self.schedule is not None and gid in self.schedule.index:
+            return self.schedule.loc[gid]
+        raise KeyError(f"game {gid} is neither built nor in the live schedule")
+
+    def league_tov(self, date) -> float:
+        """League turnovers per possession over the 60 game-days strictly before ``date``."""
+        if pd.Timestamp(date) in self.lg_tov:
+            return float(self.lg_tov[pd.Timestamp(date)])
+        k = int(np.searchsorted(self.lg_tov_dates, np.datetime64(pd.Timestamp(date)), side="left")) - 1
+        return float(self.lg_tov_after[k]) if k >= 0 else 0.142
+
+    def last_starters(self, team_id: int, before) -> list:
+        """The starting five of the team's last finished game before ``before``."""
+        pg = self.pg
+        d = pg[(pg["team_id"] == team_id) & (pg["game_date"] < pd.Timestamp(before)) & pg["played"]]
+        if d.empty:
+            return []
+        last = d[d["game_date"] == d["game_date"].max()]
+        return [int(x) for x in last.loc[last["starter"], "person_id"]]
 
     def latest_rates(self, person_id: int, before) -> pd.Series | None:
         sub = self.rates_by_person.get(person_id)
@@ -173,7 +218,107 @@ def minutes_sd(m: float, starter: bool, override: float | None = None) -> float:
     return float(np.clip(2.2 + 0.08 * m, 2.5, 5.0)) if starter else float(np.clip(2.4 + 0.10 * m, 2.5, 5.5))
 
 
-def game_spec(store: InputStore, game_id: int, minutes_col: str = "pred_gbm") -> GameSpec:
+def availability_prior(store: InputStore, streak: float) -> float:
+    """P(appears) of a rotation player by the team games he has missed in a row (estimated on the tuning season)."""
+    if not store.priors:
+        return 1.0 if streak == 0 else 0.0
+    return float(store.priors.get(str(streak_bucket([0 if streak != streak else int(streak)])[0]), 0.0))
+
+
+def pregame_team_spec(store: InputStore, game_id: int, team_id: int, overrides: dict | None = None,
+                      max_players: int = MAX_PLAYERS) -> tuple[TeamSpec, dict]:
+    """A team spec for an unplayed game from pregame information only: nothing from the game itself.
+
+    * roster: the team's pool (players who appeared for it in the previous 25 days and not elsewhere since);
+    * availability: no injury report - a player who missed the team's last three games or more is presumed out,
+      other rotation players play with the appearance rate of their missed-game streak (tuning season: about 0.9
+      after playing the previous game), fringe players with their share of recent games; ``overrides`` (``out``,
+      ``available``, ``p_play``) are the user's injury report;
+    * minutes: the lineup-blind model (starters are not known), conditional on playing;
+    * starters: ``overrides['starters']`` if given, else the last game's five among the available rotation
+      players, vacancies filled by start rate and then by projected minutes.
+    """
+    ov = overrides or {}
+    out, forced, pset = set(ov.get("out", ())), set(ov.get("available", ())), dict(ov.get("p_play", {}))
+    g = store.game_row(game_id)
+    date = g["game_date"]
+    f = store.by_game.get(game_id)
+    f = f[f["team_id"] == team_id] if f is not None else None
+    if f is None or f.empty:
+        raise PregameInputsMissing(f"no pregame rows for game {game_id} (team {team_id}): it is outside the "
+                                   "projection horizon, or the inputs need rebuilding (quantlab live-update)")
+    rates = store.rates_by_game.get(game_id)
+    mins = store.minutes_by_game.get(game_id)
+    pool = store.pool.get((game_id, team_id))
+    share = dict(zip(pool["person_id"].astype(int), pool["share"])) if pool is not None else {}
+    cond_w = dict(zip(pool["person_id"].astype(int), pool["cond_window"])) if pool is not None else {}
+    rot_rows, fringe_rows, presumed_out = [], [], []
+    for r in f.itertuples(index=False):
+        pid = int(r.person_id)
+        if pid in out:
+            continue
+        rr = rates.loc[pid] if rates is not None and pid in rates.index else store.latest_rates(pid, date)
+        if rr is None:
+            continue
+        streak = getattr(r, "missed_streak", 0.0)
+        streak = 0.0 if streak != streak else float(streak)
+        m = float(mins.loc[pid, "pred_gbm_pre"]) if mins is not None and pid in mins.index else np.nan
+        if not np.isfinite(m) or m <= 0:
+            m = float(np.nan_to_num(r.exp_min, nan=cond_w.get(pid, 8.0)))
+        start_rate = (r.starts_m20 / r.gp_m20) if getattr(r, "gp_m20", 0) else 0.0
+        rot = bool(getattr(r, "rotation_pre", False)) or pid in forced
+        if rot:
+            if pid in forced:
+                p = float(pset.get(pid, 1.0))
+            elif pid in pset:
+                p = float(pset[pid])
+            elif streak > PRESUMED_AVAILABLE_STREAK:
+                presumed_out.append(pid)
+                continue
+            else:
+                p = availability_prior(store, streak)
+            rot_rows.append((pid, rr, m, p, start_rate))
+        elif pid in share:
+            fringe_rows.append((pid, rr, m, float(pset.get(pid, share[pid])), cond_w.get(pid, m)))
+    # starters
+    want = [int(x) for x in (ov.get("starters") or {}).get(int(team_id), [])]
+    avail_rot = {pid for pid, *_ in rot_rows}
+    if want:
+        five, source = [p for p in want if p in avail_rot][:5], "user"
+    else:
+        five, source = [p for p in store.last_starters(team_id, date) if p in avail_rot], "last game"
+    if len(five) < 5:
+        rest = sorted([x for x in rot_rows if x[0] not in five], key=lambda x: (-x[4], -x[2]))
+        five += [x[0] for x in rest[:5 - len(five)]]
+    five = set(five[:5])
+    players = []
+    for pid, rr, m, p, _ in sorted(rot_rows, key=lambda x: -x[2]):
+        st = pid in five
+        players.append(PlayerSpec(pid, store.names.get(pid, str(pid)), _rates_dict(rr), min_mean=m,
+                                  min_sd=minutes_sd(m, st), p_play=p, starter=st, rotation=True))
+    for pid, rr, m, sh, cw in sorted(fringe_rows, key=lambda x: -x[3] * x[2]):
+        if len(players) >= max_players:
+            break
+        cond = m if np.isfinite(m) and m > 0 else max(cw, 1.0)
+        players.append(PlayerSpec(pid, store.names.get(pid, str(pid)), _rates_dict(rr),
+                                  min_mean=max(sh * cond, 0.3), min_sd=3.0, p_play=sh, starter=False,
+                                  rotation=False))
+    players = players[:max_players]
+    tf = store.tf.loc[(game_id, team_id)] if (game_id, team_id) in store.tf.index else None
+    dfac = {k: float(tf[f"def_{k}"]) for k in DEF_FACTORS} if tf is not None else {}
+    name = str(g["home_team"] if team_id == g["home_team_id"] else g["away_team"])
+    meta = {"starters": sorted(five), "starters_source": source, "presumed_out": presumed_out,
+            "out": sorted(out), "factors": tf is not None}
+    return TeamSpec(int(team_id), name, players, def_factors=dfac), meta
+
+
+def game_spec(store: InputStore, game_id: int, minutes_col: str = "pred_gbm", mode: str = "auto",
+              overrides: dict | None = None) -> GameSpec:
+    """The simulator's inputs for a game. ``mode``: 'asof' (a finished game, as backtested: the game's own
+    appearances stand in for the inactive list and its starters are known), 'pregame' (an unplayed game:
+    pregame information only, see ``pregame_team_spec``), 'auto' (pregame unless the game is finished)."""
+    if mode == "pregame" or (mode == "auto" and not store.is_final(game_id)):
+        return pregame_game_spec(store, int(game_id), overrides)
     g = store.games.loc[game_id]
     f = store.by_game[game_id]
     playing = {int(t): set(f.loc[(f["team_id"] == t) & f["played"], "person_id"].astype(int))
@@ -189,4 +334,24 @@ def game_spec(store: InputStore, game_id: int, minutes_col: str = "pred_gbm") ->
     if rates is not None and len(rates):
         lg = {"blk": float(rates["lg_blk"].mean()), "ast_rate": float(rates["lg_ast_rate"].mean())}
     lg["tov_per_poss"] = float(store.lg_tov.get(g["game_date"], 0.142))
-    return GameSpec(home, away, pace=pace, league=lg)
+    return GameSpec(home, away, pace=pace, league=lg, meta={"mode": "asof"})
+
+
+def pregame_game_spec(store: InputStore, game_id: int, overrides: dict | None = None) -> GameSpec:
+    g = store.game_row(game_id)
+    if int(g["home_team_id"]) <= 0 or int(g["away_team_id"]) <= 0:
+        raise PregameInputsMissing(f"game {game_id}: teams not known yet")
+    home, mh = pregame_team_spec(store, game_id, int(g["home_team_id"]), overrides)
+    away, ma = pregame_team_spec(store, game_id, int(g["away_team_id"]), overrides)
+    tp = store.tp.loc[game_id] if game_id in store.tp.index else None
+    if tp is None:
+        raise PregameInputsMissing(f"no team-model prediction for game {game_id}: rebuild the inputs "
+                                   "(quantlab live-update)")
+    home.target_ppp, away.target_ppp = float(tp["ppp_home"] / 100), float(tp["ppp_away"] / 100)
+    rates = store.rates_by_game.get(game_id)
+    lg = {}
+    if rates is not None and len(rates):
+        lg = {"blk": float(rates["lg_blk"].mean()), "ast_rate": float(rates["lg_ast_rate"].mean())}
+    lg["tov_per_poss"] = store.league_tov(g["game_date"])
+    return GameSpec(home, away, pace=float(tp["pace"]), league=lg,
+                    meta={"mode": "pregame", "home": mh, "away": ma})

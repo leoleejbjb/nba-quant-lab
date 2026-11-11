@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-from .config import ALL_SEASONS, PATHS, TEST_SEASONS, TUNING_SEASON
+from .config import ALL_SEASONS, PATHS, PINNED_SEASONS, TEST_SEASONS, TUNING_SEASON
 
 
 def _seasons(arg: str | None) -> list[str]:
@@ -29,9 +29,15 @@ def _seasons(arg: str | None) -> list[str]:
 
 
 def cmd_fetch(a) -> None:
+    from .config import LIVE_SEASON
     from .data.download import fetch
     from .data.sources import all_files
-    fetch(all_files(_seasons(a.season)), PATHS.raw)
+    seasons = _seasons(a.season)
+    feed = [s for s in seasons if s == LIVE_SEASON or s not in PINNED_SEASONS]
+    if feed:
+        raise SystemExit(f"{', '.join(feed)}: not in the pinned mirror. The current season ({LIVE_SEASON}) is fetched "
+                         "game by game by `quantlab live-update` (from cdn.nba.com)")
+    fetch(all_files(seasons), PATHS.raw)
 
 
 def cmd_build(a) -> None:
@@ -149,8 +155,22 @@ def cmd_project(a) -> None:
     from .sim.scenario import Scenario
     pr = Projector()
     sc = Scenario(out=[int(x) for x in a.out.split(",")] if a.out else [])
-    proj = pr.project(a.game_id, n=a.n_sims, environment=a.environment, scenario=sc)
+    try:
+        proj = pr.project(a.game_id, n=a.n_sims, environment=a.environment, scenario=sc)
+    except KeyError:
+        raise SystemExit(f"game {a.game_id} is not in the database or the current season's schedule "
+                         "(run `quantlab live-update` for the current season)") from None
     res = proj.result
+    if proj.calibration.get("information_set") == "pregame":
+        g = pr.game_info(a.game_id)
+        print(f"[pregame] {pd.Timestamp(g['game_date']).date()}: not played yet - projected from earlier games only, "
+              "with projected starters and availability (players out: --out)")
+        for side in ("away", "home"):
+            m = proj.calibration["pregame"][side]
+            names = [pr.store.names.get(x, str(x)) for x in m["starters"]]
+            out = [pr.store.names.get(x, str(x)) for x in m["presumed_out"]]
+            print(f"  {getattr(res.game, side).name}: starters ({m['starters_source']}) {', '.join(names)}; "
+                  f"presumed out {', '.join(out) or 'none'}")
     if proj.calibration.get("minutes_reprojection"):
         print(f"[scenario] {proj.calibration['minutes_reprojection']}")
     sc_ = res.score.astype(float)
@@ -168,6 +188,104 @@ def cmd_project(a) -> None:
     L = float(round(x.mean() - 0.5) + 0.5)
     print(f"{res.players[star[0]][star[1]].name}: over {L} pts {props.line_probs(x, L)['over']:.1%}, "
           f"double-double {props.double_double(res, pid):.1%}; invariants: {res.check_invariants()['all']}")
+
+
+def cmd_slate(a) -> None:
+    """Projected box scores of every game on a date: one CSV row per player (means and 10th-90th percentiles,
+    conditional on playing, and P(play)), one printed line per game."""
+    import numpy as np
+    import pandas as pd
+    from .live import Projector
+    pr = Projector()
+    date = (pd.Timestamp.now(tz="America/New_York").date() if a.date == "today" else pd.Timestamp(a.date).date())
+    sl = pr.slate(date)
+    if sl.empty:
+        raise SystemExit(f"no games on {date}")
+    rows = []
+    for g in sl.itertuples(index=False):
+        label = f"{g.away_team} @ {g.home_team} (game {int(g.game_id)})"
+        if not g.projectable:
+            print(f"  {label}: no pregame inputs yet (outside the projection horizon: run live-update closer to "
+                  "the date)")
+            continue
+        proj = pr.project(int(g.game_id), n=a.n_sims, environment=a.environment)
+        res, spec = proj.result, proj.spec
+        sc = res.score.astype(float)
+        mg = sc[:, 0] - sc[:, 1]
+        kind = "pregame" if proj.calibration.get("information_set") == "pregame" else "finished game, as backtested"
+        print(f"  {label}: {sc[:, 1].mean():.1f} - {sc[:, 0].mean():.1f}, home win {(mg > 0).mean():.1%}, "
+              f"spread {-mg.mean():+.1f}, total {sc.sum(axis=1).mean():.1f} ({kind})")
+        for t, team in enumerate((spec.home, spec.away)):
+            opp = (spec.away if t == 0 else spec.home).name
+            for i, p in enumerate(team.players):
+                play = res.stat("min")[:, t, i] > 0
+                if not play.any():
+                    continue
+                r = {"date": str(date), "game_id": int(g.game_id), "team": team.name, "opponent": opp,
+                     "home": t == 0, "player": p.name, "person_id": p.person_id, "starter": bool(p.starter),
+                     "p_play": round(float(play.mean()), 3), "information": kind}
+                for st in ("min", "pts", "reb", "ast", "fg3m", "stl", "blk", "tov", "pra"):
+                    x = res.stat(st)[play, t, i]
+                    r[st] = round(float(x.mean()), 2)
+                    r[f"{st}_p10"], r[f"{st}_p90"] = (round(float(v), 1) for v in np.percentile(x, [10, 90]))
+                rows.append(r)
+    out = pd.DataFrame(rows)
+    path = Path(a.out or f"projections_{date}.csv")
+    out.to_csv(path, index=False, encoding="utf-8")
+    print(f"[slate] {len(out)} player rows for {out['game_id'].nunique() if len(out) else 0} games -> {path}")
+
+
+def cmd_live_update(a) -> None:
+    """Current season: fetch new games from cdn.nba.com, rebuild the season, refresh features and models with the
+    parameters fitted by the full pipeline (no re-tuning, no backtests), and give unplayed games pregame inputs."""
+    import datetime as dt
+    import json
+    import pandas as pd
+    from .config import LIVE_SEASON, UPCOMING_DAYS
+    from .data.build import build_season
+    from .data.cdn import fetch_live
+    from .data.database import build_database, upcoming_team_games
+    from .data.download import AccessDenied
+    from .features.asof import build_features
+    from .models.minutes import run_minutes, save_season_models
+    from .models.opponent import run_opponent
+    from .models.rates import run_rates
+    from .models.team import run_team_model
+    need = [f for f in ("rate_params.json", "team_factor_params.json", "sim_constants.json")
+            if not (PATHS.models / f).exists()]
+    if need:
+        raise SystemExit(f"live-update needs the fitted models first ({', '.join(need)} missing): run the full "
+                         "pipeline once (`make all`, or `.\\make.ps1 all` on Windows).")
+    if not (PATHS.models / "integration.json").exists():
+        print("[live] note: no blend weight yet (data/models/integration.json, written by `quantlab blendweight` "
+              "in the backtest step); the Blend environment falls back to 0.5")
+    fetched = None
+    if not a.skip_fetch:
+        try:
+            fetched = fetch_live(LIVE_SEASON, refetch_hours=a.refetch_hours)
+        except AccessDenied as e:
+            raise SystemExit(f"[live] {e}\ncdn.nba.com refused this machine. Requests are never retried under another "
+                             "identity: run `quantlab live-update` on your own computer (cloud machines are often "
+                             "refused), or rebuild from the files already fetched with --skip-fetch.")
+    q = build_season(LIVE_SEASON, workers=a.workers)
+    build_database()
+    build_features()
+    run_team_model()
+    run_minutes()
+    save_season_models(seasons=[LIVE_SEASON])
+    run_rates(tune=False)
+    run_opponent(tune=False)
+    up = upcoming_team_games()
+    status = {"season": LIVE_SEASON, "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+              "games_built": int(q.get("games", 0)), "last_game_date": q.get("live", {}).get("last_game_date"),
+              "upcoming_games": int(up["game_id"].nunique()), "upcoming_days": UPCOMING_DAYS,
+              "upcoming_dates": sorted({str(pd.Timestamp(d).date()) for d in up["game_date"]}),
+              "fetch": fetched}
+    (PATHS.root / "live_status.json").write_text(json.dumps(status, indent=1, default=str), encoding="utf-8")
+    print(f"[live] {LIVE_SEASON}: {status['games_built']} games built through {status['last_game_date']}; "
+          f"{status['upcoming_games']} upcoming games with pregame inputs "
+          f"({status['upcoming_dates'][0] if status['upcoming_dates'] else '-'} .. "
+          f"{status['upcoming_dates'][-1] if status['upcoming_dates'] else '-'})")
 
 
 def cmd_dashboard(a) -> None:
@@ -231,13 +349,27 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--blend-weight", type=float, default=None,
                     help="team-model weight for --modes blend (default: data/models/integration.json)")
     bt.set_defaults(fn=cmd_backtest)
-    pj = sub.add_parser("project", help="projected box score for one game (earlier games and the starting fives; "
-                                                "availability from who appeared, the inactive-list stand-in)")
+    pj = sub.add_parser("project", help="projected box score for one game: an unplayed game of the current season "
+                                        "truly pregame (projected starters and availability; --out for the injury "
+                                        "report), a finished game as backtested")
     pj.add_argument("--game-id", type=int, required=True)
     pj.add_argument("--n-sims", type=int, default=20000)
     pj.add_argument("--environment", default="blend", choices=["blend", "team", "none"])
     pj.add_argument("--out", default="", help="comma-separated person ids ruled out")
     pj.set_defaults(fn=cmd_project)
+    sl = sub.add_parser("slate", help="projected box scores of every game on a date, written to a CSV")
+    sl.add_argument("--date", default="today", help="YYYY-MM-DD or 'today' (US Eastern)")
+    sl.add_argument("--n-sims", type=int, default=10000)
+    sl.add_argument("--environment", default="blend", choices=["blend", "team", "none"])
+    sl.add_argument("--out", default="", help="CSV path (default projections_<date>.csv)")
+    sl.set_defaults(fn=cmd_slate)
+    lu = sub.add_parser("live-update", help="current season: fetch new games from cdn.nba.com, rebuild the season, "
+                                            "refresh features and models (run it on your own computer)")
+    lu.add_argument("--skip-fetch", action="store_true", help="rebuild from the files already fetched")
+    lu.add_argument("--refetch-hours", type=float, default=36.0,
+                    help="download games again until this many hours after tip-off (post-game stat corrections)")
+    lu.add_argument("--workers", type=int, default=4)
+    lu.set_defaults(fn=cmd_live_update)
     d = sub.add_parser("dashboard", help="launch the Streamlit dashboard")
     d.add_argument("--port", type=int, default=8501)
     d.set_defaults(fn=cmd_dashboard)

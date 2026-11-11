@@ -509,12 +509,21 @@ corrected ones.
   regenerated, moved from 66 to {N['cost.us']:.0f} µs per simulated game).
 """
 
+RH = json.loads((ROOT / "docs" / "pregame_rehearsal.json").read_text(encoding="utf-8"))
+RM = RH["mae"]
+assert all(RM[k]["pregame"] > RM[k]["asof"] for k in ("min", "pts", "pra")), "rehearsal: pregame no longer worse"
+
 limitations = f"""
 ## Limitations
 
-* **No live 2026-27 data.** The pinned mirrors end with 2025-26 and the NBA's CDN refused this environment's requests;
-  the dashboard projects any date in 2023-24 .. 2025-26 as "upcoming" (from earlier games plus that game's starting
-  fives and who appeared) instead of tonight's slate.
+* **The current season is projected, not evaluated.** 2026-27 is fetched from the NBA's live CDN by
+  `quantlab live-update` (the CDN refused this build environment, so the fetch itself is untested here) and its
+  unplayed games are projected with pregame information only: projected starters, availability from missed-game
+  streaks (there is no injury feed; the user enters the injury report). Rehearsed on 2025-26 with the games from
+  {RH['cutoff']} on hidden ({RH['games']} games in the following week), minutes MAE was {RM['min']['pregame']:.2f}
+  against {RM['min']['asof']:.2f} for the backtest's projections of the same games, points {RM['pts']['pregame']:.2f}
+  against {RM['pts']['asof']:.2f} and PRA {RM['pra']['pregame']:.2f} against {RM['pra']['asof']:.2f}: the results
+  above are an optimistic bound for a real slate (METHODOLOGY section 11, `docs/pregame_rehearsal.json`).
 * **Availability comes from who appeared** for rotation players (the inactive list is not in the sources for the test
   seasons); measured on 2023-24, this flatters minutes by {N['ax.mae_leak']:.3f} MAE and closed-form EB points by
   {N['ax.eb_pts_mae_inactive_list'] - N['ax.eb_pts_mae_appearance_proxy']:.3f} (section 2).

@@ -15,10 +15,12 @@ half-lives ``h``, computed with a vectorized cumulative-sum identity.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 
-from ..config import PATHS
+from ..config import PATHS, TUNING_SEASON
 
 OFFSEASON_GAP_DAYS = 30.0
 RATE_HALFLIVES = (15, 40, 100, 250, 600)
@@ -29,6 +31,17 @@ COUNT_COLS = ["fga2", "fgm2", "fga3", "fgm3", "fta", "ftm", "trips2", "trips3", 
               "fgm3_ast", "pts", "blocked", "pfd", "fta_tech"]
 EXPO_COLS = ["on_poss", "op_poss", "on_fga", "on_fgm", "on_trips", "on_and1", "on_tov", "on_oreb_ch",
              "op_oreb_ch", "op_fga", "op_fga2", "on_pts", "op_pts", "min", "one"]
+
+
+def time_axis(games: pd.DataFrame, upcoming: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Season and date of every built game plus the live season's upcoming games: the calendar ``effective_time``
+    maps (so scheduled dates - even of a season with no finished game yet - get an effective time)."""
+    parts = [games[["season", "game_date"]]]
+    if upcoming is not None and len(upcoming):
+        parts.append(upcoming[["season", "game_date"]])
+    ax = pd.concat(parts, ignore_index=True)
+    ax["game_date"] = pd.to_datetime(ax["game_date"])
+    return ax
 
 
 def effective_time(dates: pd.Series, games: pd.DataFrame) -> pd.Series:
@@ -123,7 +136,7 @@ ROTATION_EXP_MIN = 12.0    # ... or expected minutes when he plays
 
 
 def team_context(pg: pd.DataFrame, feats: pd.DataFrame, active: dict | None = None,
-                 use_starters: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+                 use_starters: bool = True, scheduled: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Teammate-availability context per team-game, from information public before tip-off - except that, without
     ``active``, availability is the who-appeared stand-in for the inactive list (below).
 
@@ -141,7 +154,11 @@ def team_context(pg: pd.DataFrame, feats: pd.DataFrame, active: dict | None = No
     * ``avail_exp_min``  sum of today's available rotation players' expected minutes + fringe baseline minutes
     * ``vacated_min``    baseline minutes of unavailable *rotation* players (``vacated_used`` for plays used)
     * ``slack_min``      240 - (baseline minutes of available rotation players + fringe baseline minutes)
+
+    ``scheduled`` maps the (game_id, team_id) of unplayed games to the players presumed available (the pregame
+    availability rule in ``build_features``); such team-games get context rows but add nothing to any baseline.
     """
+    scheduled = scheduled or {}
     exp_min = (feats["min_sum_m20"] / feats["gp_m20"].replace(0, np.nan)).fillna(feats["season_min_avg"])
     h = 40
     used = sum(feats[f"{c}_h{h}"] for c in ("fga2", "fga3", "trips2", "trips3", "tov"))
@@ -154,7 +171,13 @@ def team_context(pg: pd.DataFrame, feats: pd.DataFrame, active: dict | None = No
     by_gt = {k: {p: (m, u, e, st) for p, m, u, e, st in zip(v["person_id"], v["min"], v["used"], v["exp_min"],
                                                              v["starter"])}
              for k, v in pl.groupby(["game_id", "team_id"])}
-    order = pl.drop_duplicates(["game_id", "team_id"]).sort_values(["game_date", "game_id"])
+    own_exp = {(g, p): e for g, p, e in zip(f["game_id"], f["person_id"], f["exp_min"])}
+    order = pl.drop_duplicates(["game_id", "team_id"])[["game_id", "team_id", "game_date"]]
+    if scheduled:
+        sk = pd.DataFrame(list(scheduled), columns=["game_id", "team_id"]).merge(
+            f[["game_id", "team_id", "game_date"]].drop_duplicates(["game_id", "team_id"]), on=["game_id", "team_id"])
+        order = pd.concat([order, sk], ignore_index=True)
+    order = order.sort_values(["game_date", "game_id"])
     ctx_rows, player_rows = [], []
     recent: dict = {}
     last_team: dict = {}
@@ -171,12 +194,16 @@ def team_context(pg: pd.DataFrame, feats: pd.DataFrame, active: dict | None = No
                     if last_team.get(p) == team:
                         base_min[p] = base_min.get(p, 0.0) + m / ng
                         base_used[p] = base_used.get(p, 0.0) + u / ng
-            now = by_gt[(gid, team)]
+            sched = (gid, team) in scheduled
+            now = by_gt.get((gid, team), {})
             act = active.get((gid, team)) if active is not None else None
-            avail = list(now) if act is None else sorted(set(now) | set(act))
+            if sched:
+                avail = sorted(scheduled[(gid, team)])
+            else:
+                avail = list(now) if act is None else sorted(set(now) | set(act))
 
             def expected(p):
-                e = now[p][2] if p in now else np.nan
+                e = own_exp.get((gid, p), np.nan) if sched else (now[p][2] if p in now else np.nan)
                 return e if e == e else last_exp.get(p, np.nan)
 
             def is_rot(p):
@@ -201,7 +228,8 @@ def team_context(pg: pd.DataFrame, feats: pd.DataFrame, active: dict | None = No
             for p in avail + [q for q in base_min if q not in avail_set]:   # + baseline players not available
                 player_rows.append((gid, team, p, base_min.get(p, 0.0) if ng else np.nan,
                                     base_used.get(p, 0.0) if ng else np.nan, is_rot(p), p in now))
-            updates.append((team, {p: (v[0], v[1]) for p, v in now.items()}, now))
+            if now:                      # unplayed games add nothing to the baselines
+                updates.append((team, {p: (v[0], v[1]) for p, v in now.items()}, now))
         for team, mins, now in updates:      # same-day games never see each other
             recent[team] = (recent.get(team, []) + [mins])[-10:]
             for p, v in now.items():
@@ -224,13 +252,17 @@ FRINGE_WINDOW_DAYS = 25
 FRINGE_P_FLOOR, FRINGE_P_CAP = 0.05, 0.9
 
 
-def fringe_pool_table(pg: pd.DataFrame, window_days: int = FRINGE_WINDOW_DAYS) -> pd.DataFrame:
+def fringe_pool_table(pg: pd.DataFrame, window_days: int = FRINGE_WINDOW_DAYS,
+                      team_games: pd.DataFrame | None = None) -> pd.DataFrame:
     """Pregame fringe candidates for every team-game - one rule for everyone, today's game plays no part:
     players who appeared for the team in the previous ``window_days`` days and whose last appearance before
     the game was for this team. ``share`` = their appearances / the team's games in the window (clipped to
-    [0.05, 0.9]); ``cond_window`` = their minutes per appearance in the window."""
+    [0.05, 0.9]); ``cond_window`` = their minutes per appearance in the window. ``team_games`` (game_id,
+    team_id, game_date) lists the team-games to build pools for (default: every team-game in ``pg``; add the
+    live season's unplayed games to give them pools)."""
     pl = pg[pg["played"]][["game_id", "team_id", "person_id", "game_date", "min"]].sort_values("game_date")
-    team_games = pg[["game_id", "team_id", "game_date"]].drop_duplicates(["game_id", "team_id"])
+    if team_games is None:
+        team_games = pg[["game_id", "team_id", "game_date"]].drop_duplicates(["game_id", "team_id"])
     last = {p: (d["game_date"].to_numpy(), d["team_id"].to_numpy()) for p, d in pl.groupby("person_id")}
     # a player who plays for another team on the game date (just traded) is not a candidate of his old team
     elsewhere = set(zip(pg["game_date"].to_numpy(), pg["person_id"].to_numpy(), pg["team_id"].to_numpy()))
@@ -266,13 +298,15 @@ def fringe_pool_table(pg: pd.DataFrame, window_days: int = FRINGE_WINDOW_DAYS) -
                                        "team_games"])
 
 
-def candidate_rows(pg: pd.DataFrame, pool: pd.DataFrame) -> pd.DataFrame:
+def candidate_rows(pg: pd.DataFrame, pool: pd.DataFrame, ctx: pd.DataFrame | None = None) -> pd.DataFrame:
     """Zero-stat, not-played rows for pool candidates who have no player-game row in that game, so the feature
-    store, the minutes model and the rate model produce pregame numbers for every candidate."""
+    store, the minutes model and the rate model produce pregame numbers for every candidate. ``ctx`` (game_id,
+    team_id, opp_team_id, season, game_date, is_home) defaults to the team-games in ``pg``."""
     have = pd.MultiIndex.from_frame(pg[["game_id", "person_id"]])
     c = pool[~pd.MultiIndex.from_frame(pool[["game_id", "person_id"]]).isin(have)][["game_id", "team_id", "person_id"]]
-    ctx = pg[["game_id", "team_id", "opp_team_id", "season", "game_date", "is_home"]].drop_duplicates(
-        ["game_id", "team_id"])
+    if ctx is None:
+        ctx = pg[["game_id", "team_id", "opp_team_id", "season", "game_date", "is_home"]].drop_duplicates(
+            ["game_id", "team_id"])
     c = c.merge(ctx, on=["game_id", "team_id"], how="inner")
     num = [col for col in pg.columns if col not in c.columns and pd.api.types.is_numeric_dtype(pg[col])
            and not pd.api.types.is_bool_dtype(pg[col])]
@@ -294,25 +328,100 @@ def official_active(av: pd.DataFrame) -> dict:
     return {k: set(v) for k, v in a.groupby(["game_id", "team_id"])["person_id"]}
 
 
+def missed_streaks(pg: pd.DataFrame, rows: pd.DataFrame) -> np.ndarray:
+    """For each row (team_id, season, person_id, game_date): the team's games (same season, before the date) since
+    the player last appeared for it - 0 if he played the team's previous game; the team's games so far if he has
+    not appeared for it this season."""
+    app = pg[pg["played"]][["team_id", "season", "person_id", "game_date", "game_id"]]
+    tgs = app.drop_duplicates(["game_id", "team_id"])
+    team_dates = {k: np.sort(v["game_date"].to_numpy()) for k, v in tgs.groupby(["team_id", "season"])}
+    pdates = {k: np.sort(v["game_date"].to_numpy()) for k, v in app.groupby(["team_id", "season", "person_id"])}
+    out = np.zeros(len(rows), dtype=np.int32)
+    for i, (t, s, p, d) in enumerate(zip(rows["team_id"].to_numpy(), rows["season"].to_numpy(),
+                                         rows["person_id"].to_numpy(), rows["game_date"].to_numpy())):
+        dates = team_dates.get((t, s))
+        if dates is None:
+            continue
+        n_before = int(np.searchsorted(dates, d, "left"))
+        mine = pdates.get((t, s, p))
+        j = int(np.searchsorted(mine, d, "left")) - 1 if mine is not None else -1
+        out[i] = n_before if j < 0 else n_before - int(np.searchsorted(dates, mine[j], "left")) - 1
+    return out
+
+
+STREAK_BUCKETS = (("0", 0, 0), ("1", 1, 1), ("2", 2, 2), ("3-4", 3, 4), ("5-9", 5, 9), ("10+", 10, 10 ** 6))
+PRESUMED_AVAILABLE_STREAK = 2      # unplayed games: presumed available if he appeared in one of the team's last 3
+
+
+def streak_bucket(streak) -> np.ndarray:
+    s = np.asarray(streak)
+    out = np.full(s.shape, "10+", dtype=object)
+    for name, lo, hi in STREAK_BUCKETS:
+        out[(s >= lo) & (s <= hi)] = name
+    return out
+
+
+def availability_priors(feats: pd.DataFrame, pool: pd.DataFrame, pg: pd.DataFrame,
+                        season: str = TUNING_SEASON) -> dict:
+    """P(appears) of a rotation player (lineup-blind rule) in his team's pregame pool, by team games missed in a
+    row - the availability prior for unplayed games, which have no injury report. Estimated on ``season``."""
+    f = feats[(feats["season"] == season) & feats["rotation_pre"].eq(True)]
+    f = f.merge(pool[["game_id", "team_id", "person_id"]], on=["game_id", "team_id", "person_id"])
+    b = streak_bucket(missed_streaks(pg, f))
+    out = {"season": season, "rule": "rotation players (lineup-blind rule) in the team's 25-day pool",
+           "p_appear": {}, "n": {}}
+    for name, _, _ in STREAK_BUCKETS:
+        m = b == name
+        out["p_appear"][name] = round(float(f.loc[m, "played"].mean()), 4) if m.any() else 0.0
+        out["n"][name] = int(m.sum())
+    return out
+
+
 def build_features(log=print) -> dict:
+    from ..data.database import upcoming_team_games
     d = PATHS.processed("all")
     pg = pd.read_parquet(d / "player_games.parquet")
     games = pd.read_parquet(d / "games.parquet")
     tg = pd.read_parquet(d / "team_games.parquet")
+    # the live season's unplayed games (within the projection horizon) get pregame rows too
+    up = upcoming_team_games()
+    axis = time_axis(games, up)
+    team_games = pg[["game_id", "team_id", "game_date"]].drop_duplicates(["game_id", "team_id"])
+    ctx_cols = ["game_id", "team_id", "opp_team_id", "season", "game_date", "is_home"]
+    ctx_all = pg[ctx_cols].drop_duplicates(["game_id", "team_id"])
+    if len(up):
+        team_games = pd.concat([team_games, up[["game_id", "team_id", "game_date"]]], ignore_index=True)
+        ctx_all = pd.concat([ctx_all, up[ctx_cols]], ignore_index=True)
     # pregame fringe candidates who did not appear get a (not-played) row, so every candidate is projected
-    # the same way whether or not he appears
-    pool = fringe_pool_table(pg)
-    cand = candidate_rows(pg, pool)
-    pg = pd.concat([pg.assign(candidate=False), cand.assign(candidate=True)], ignore_index=True)
-    feats = player_features(pg, games)
-    feats = feats.merge(pg[["game_id", "team_id", "person_id", "candidate"]], on=["game_id", "team_id", "person_id"],
-                        how="left")
-    ctx, f = team_context(pg, feats)
+    # the same way whether or not he appears; for unplayed games every pool player is such a candidate
+    pool = fringe_pool_table(pg, team_games=team_games)
+    cand = candidate_rows(pg, pool, ctx=ctx_all)
+    cand["scheduled"] = cand["game_id"].isin(set(up["game_id"]))
+    pg = pd.concat([pg.assign(candidate=False, scheduled=False), cand.assign(candidate=True)], ignore_index=True)
+    # unplayed games: presumed available = appeared in one of the team's last three games
+    sched_rows = pg[pg["scheduled"]]
+    streak = missed_streaks(pg, sched_rows) if len(sched_rows) else np.zeros(0, dtype=np.int32)
+    scheduled = {}
+    for (gid, tid, pid), st in zip(sched_rows[["game_id", "team_id", "person_id"]].itertuples(index=False, name=None),
+                                   streak):
+        if st <= PRESUMED_AVAILABLE_STREAK:
+            scheduled.setdefault((gid, tid), set()).add(pid)
+    for key in set(zip(up["game_id"], up["team_id"])) - set(scheduled):
+        scheduled[key] = set()            # no recent players at all: context rows still exist
+    feats = player_features(pg, axis)
+    feats = feats.merge(pg[["game_id", "team_id", "person_id", "candidate", "scheduled"]],
+                        on=["game_id", "team_id", "person_id"], how="left")
+    if len(sched_rows):
+        ms = sched_rows[["game_id", "person_id"]].assign(missed_streak=streak)
+        feats = feats.merge(ms, on=["game_id", "person_id"], how="left")
+    else:
+        feats["missed_streak"] = np.nan
+    ctx, f = team_context(pg, feats, scheduled=scheduled)
     feats = feats.merge(f[["game_id", "team_id", "person_id", "exp_min", "exp_usg", "base_min", "base_used",
                            "rotation"]], on=["game_id", "team_id", "person_id"], how="left")
     feats = feats.merge(ctx.drop(columns=["absent"]), on=["game_id", "team_id"], how="left")
     # lineup-blind variant (the "no lineup information" minutes model): rotation ignores today's starters
-    ctx_pre, f_pre = team_context(pg, feats, use_starters=False)
+    ctx_pre, f_pre = team_context(pg, feats, use_starters=False, scheduled=scheduled)
     feats = feats.merge(f_pre[["game_id", "team_id", "person_id", "rotation"]].rename(
         columns={"rotation": "rotation_pre"}), on=["game_id", "team_id", "person_id"], how="left")
     feats = feats.merge(ctx_pre[["game_id", "team_id"] + CTX_VARIANT_COLS].rename(
@@ -327,6 +436,8 @@ def build_features(log=print) -> dict:
     feats.to_parquet(PATHS.features / "player_asof.parquet", index=False)
     ctx.to_parquet(PATHS.features / "team_context.parquet", index=False)
     pool.to_parquet(PATHS.features / "fringe_pool.parquet", index=False)
+    pri = availability_priors(feats, pool, pg)
+    (PATHS.features / "availability_priors.json").write_text(json.dumps(pri, indent=1), encoding="utf-8")
     # exact information set where the official inactive list exists (2020-21 .. 2023-24): dressed players
     # (played or DNP-coach's decision) are available; used to measure the appearance proxy's leak
     av = pd.read_parquet(d / "availability.parquet")
@@ -339,5 +450,6 @@ def build_features(log=print) -> dict:
         ctx_x.to_parquet(PATHS.features / "team_context_exact.parquet", index=False)
         pctx_x.to_parquet(PATHS.features / "player_context_exact.parquet", index=False)
     log(f"[features] {len(feats):,} rows ({int(feats['candidate'].sum()):,} pregame fringe candidates who did not "
-        f"appear), {feats.shape[1]} columns")
+        f"appear; {int(feats['scheduled'].sum()):,} rows of {up['game_id'].nunique()} unplayed games), "
+        f"{feats.shape[1]} columns; availability priors {pri['p_appear']}")
     return {"rows": int(len(feats)), "cols": int(feats.shape[1])}

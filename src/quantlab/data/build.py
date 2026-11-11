@@ -10,6 +10,10 @@ Outputs in ``data/processed/<season>/``:
 * ``starters``, ``contradictions``  reconstruction diagnostics
 * ``box_compare``   derived vs official box score per player-game (seasons with box scores)
 * ``quality.json``  reconstruction + reconciliation summary
+* ``schedule``      the live season only: every scheduled regular-season game, with ``built`` = reconstructed here
+
+The pinned seasons are read from the mirror archives; the live season (``config.LIVE_SEASON``) from the per-game files
+``quantlab live-update`` fetched from cdn.nba.com - only finished games with a complete play-by-play are built.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import PATHS, Season
-from .events import game_table, normalize_events, read_raw_pbp
+from .events import game_table, normalize_events, read_live_pbp, read_raw_pbp
 from .game import reconstruct_game
 from .sources import box_files, pbp_file, team_totals_file
 
@@ -106,13 +110,60 @@ def _reconstruct_chunk(items):
     return [reconstruct_game(ev, h, a, box) for ev, h, a, box in items]
 
 
+def _apply_reference(games: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
+    """Home/away and date from a reference (official box scores, or the live schedule): swap the vote-derived teams
+    where the reference disagrees and take its date. ``ref``: game_id, ref_home_team_id, ref_date."""
+    games = games.merge(ref[["game_id", "ref_home_team_id", "ref_date"]], on="game_id", how="left")
+    swap = games["ref_home_team_id"].notna() & (games["ref_home_team_id"] != games["home_team_id"])
+    games.loc[swap, ["home_team_id", "away_team_id"]] = games.loc[swap, ["away_team_id", "home_team_id"]].to_numpy()
+    games.loc[swap, ["home_team", "away_team"]] = games.loc[swap, ["away_team", "home_team"]].to_numpy()
+    games.loc[swap, ["final_home", "final_away"]] = games.loc[swap, ["final_away", "final_home"]].to_numpy()
+    games["home_away_swapped"] = swap
+    games["game_date"] = pd.to_datetime(games["ref_date"]).fillna(games["game_date"])
+    return games.drop(columns=["ref_home_team_id", "ref_date"])
+
+
+def live_season_inputs(label: str, log: Callable[[str], None] = print) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Raw play-by-play of the live season's finished games (complete files only) and its schedule."""
+    from .cdn import check_pbp, load_schedule, pbp_path, read_json_gz
+    sched = load_schedule(label)
+    docs, missing, incomplete = [], [], []
+    for gid in sched.loc[sched["status"] == "final", "game_id"].to_numpy():
+        path = pbp_path(label, gid)
+        if not path.exists():
+            missing.append(int(gid))
+            continue
+        doc = read_json_gz(path)
+        if check_pbp(doc, int(gid)):
+            incomplete.append(int(gid))
+            continue
+        docs.append(doc)
+    raw = read_live_pbp(docs, Season(label).game_prefix)
+    if missing or incomplete:
+        log(f"[build {label}] final games without a usable play-by-play file (not built): {len(missing)} missing, "
+            f"{len(incomplete)} incomplete")
+    sched.attrs["missing_pbp"], sched.attrs["incomplete_pbp"] = missing, incomplete
+    return raw, sched
+
+
 def build_season(label: str, *, workers: int = 4, log: Callable[[str], None] = print) -> dict:
     t0 = time.perf_counter()
     season = Season(label)
     sd, pd_dir = PATHS.staged(label), PATHS.processed(label)
     PATHS.ensure(sd, pd_dir)
-    rf = pbp_file(season.start_year)
-    raw = read_raw_pbp(PATHS.raw / rf.filename, rf.member, season.game_prefix)
+    sched = None
+    if season.is_live:
+        raw, sched = live_season_inputs(label, log)
+        if raw.empty:
+            sched = sched.assign(built=False)
+            _write(sched, pd_dir / "schedule.parquet")
+            for name in ("games", "player_games", "team_games"):       # no stale tables from an earlier build
+                (pd_dir / f"{name}.parquet").unlink(missing_ok=True)
+            log(f"[build {label}] no finished games yet ({len(sched)} scheduled)")
+            return {"season": label, "games": 0, "scheduled": int(len(sched))}
+    else:
+        rf = pbp_file(season.start_year)
+        raw = read_raw_pbp(PATHS.raw / rf.filename, rf.member, season.game_prefix)
     events = normalize_events(raw)
     _write(events, sd / "events.parquet")
     games = game_table(events)
@@ -122,17 +173,23 @@ def build_season(label: str, *, workers: int = 4, log: Callable[[str], None] = p
         _write(box_p, sd / "box_players.parquet")
         _write(box_t, sd / "box_teams.parquet")
         bh = box_t[box_t["is_home"]][["game_id", "team_id", "game_date"]].rename(
-            columns={"team_id": "box_home_team_id", "game_date": "box_date"})
-        games = games.merge(bh, on="game_id", how="left")
-        swap = games["box_home_team_id"].notna() & (games["box_home_team_id"] != games["home_team_id"])
-        games.loc[swap, ["home_team_id", "away_team_id"]] = games.loc[swap, ["away_team_id", "home_team_id"]].to_numpy()
-        games.loc[swap, ["home_team", "away_team"]] = games.loc[swap, ["away_team", "home_team"]].to_numpy()
-        games.loc[swap, ["final_home", "final_away"]] = games.loc[swap, ["final_away", "final_home"]].to_numpy()
-        games["home_away_swapped"] = swap
-        games["game_date"] = pd.to_datetime(games["box_date"]).fillna(games["game_date"])
-        games = games.drop(columns=["box_home_team_id", "box_date"])
+            columns={"team_id": "ref_home_team_id", "game_date": "ref_date"})
+        games = _apply_reference(games, bh)
+    if sched is not None:          # live season: the schedule is the reference (the vote / -6 h rules are checks)
+        ref = sched[["game_id", "home_team_id", "game_date", "home_score", "away_score"]].rename(
+            columns={"home_team_id": "ref_home_team_id", "game_date": "ref_date"})
+        games = _apply_reference(games, ref)
+        sc = games[["game_id", "final_home", "final_away"]].merge(ref, on="game_id", how="left")
+        games["score_matches_schedule"] = ((sc["final_home"] == sc["home_score"]) &
+                                           (sc["final_away"] == sc["away_score"])).to_numpy()
+    bad = games["home_team_id"].isna() | games["away_team_id"].isna()
+    if bad.any():                  # fewer than two scoring teams: cannot be reconstructed
+        log(f"[build {label}] {int(bad.sum())} games without two identifiable teams skipped: "
+            f"{games.loc[bad, 'game_id'].astype(int).tolist()[:10]}")
+        games = games[~bad].reset_index(drop=True)
+        events = events[events["game_id"].isin(games["game_id"])].reset_index(drop=True)
     log(f"[build {label}] {len(games):,} games, {len(events):,} events, official box scores: "
-        f"{'yes' if season.has_box else 'no'}")
+        f"{'yes' if season.has_box else 'no'}{' (live season)' if season.is_live else ''}")
 
     box_by_game = dict(tuple(box_p.groupby("game_id"))) if box_p is not None else {}
     gmeta = games.set_index("game_id")
@@ -183,6 +240,8 @@ def build_season(label: str, *, workers: int = 4, log: Callable[[str], None] = p
         players = attach_official(players, box_p)
     else:
         games["analysis_ok"] = games["points_conserved"] & games["minutes_reconcile"] & (games["valid_share"] > 0.99)
+    if "score_matches_schedule" in games:
+        games["analysis_ok"] &= games["score_matches_schedule"]
     games["season"] = label
     games = games.sort_values(["game_date", "game_id"]).reset_index(drop=True)
     players = players.merge(games[["game_id", "game_date", "analysis_ok"]], on="game_id", how="left")
@@ -196,6 +255,18 @@ def build_season(label: str, *, workers: int = 4, log: Callable[[str], None] = p
     if compare is not None:
         _write(compare, pd_dir / "box_compare.parquet")
     q = quality(label, games, stints, players, starters, contra, compare, time.perf_counter() - t0)
+    if sched is not None:
+        built = set(games["game_id"].astype(int))
+        sched = sched.assign(built=sched["game_id"].isin(built))
+        _write(sched, pd_dir / "schedule.parquet")
+        q["live"] = {"source": "cdn.nba.com liveData (fetched by quantlab live-update)",
+                     "scheduled_games": int(len(sched)),
+                     "final_in_schedule": int((sched["status"] == "final").sum()),
+                     "built": int(sched["built"].sum()),
+                     "missing_pbp": sched.attrs.get("missing_pbp", []),
+                     "incomplete_pbp": sched.attrs.get("incomplete_pbp", []),
+                     "score_mismatch": games.loc[~games["score_matches_schedule"], "game_id"].astype(int).tolist(),
+                     "last_game_date": str(pd.to_datetime(games["game_date"]).max().date())}
     write_json(q, pd_dir / "quality.json")
     log(f"[build {label}] done in {q['seconds']:.1f}s: {len(players):,} player-games, {len(stints):,} stints, "
         f"{len(poss):,} possessions; valid lineup time {q['valid_time_share']:.3%}; "

@@ -7,13 +7,13 @@ import json
 import pandas as pd
 import streamlit as st
 
-from quantlab.config import ALL_SEASONS, PATHS
+from quantlab.config import LIVE_SEASON, PATHS, db_seasons
 
 
 def render() -> None:
     st.title("Data & methods")
     rows = []
-    for s in ALL_SEASONS:
+    for s in dict.fromkeys((*db_seasons(), LIVE_SEASON)):
         p = PATHS.processed(s) / "quality.json"
         if not p.exists():
             continue
@@ -33,6 +33,19 @@ def render() -> None:
                                 if c not in ("Season", "Games", "Usable games", "Player-games")})
     st.caption("Official box scores exist in the pinned sources only through 2023-24; later seasons are checked for "
                "internal consistency (points conserved, 5 x game length minutes per team).")
+    lq = PATHS.processed(LIVE_SEASON) / "quality.json"
+    if lq.exists():
+        live = json.loads(lq.read_text(encoding="utf-8")).get("live", {})
+        st.subheader(f"Current season ({LIVE_SEASON})")
+        st.markdown(
+            f"Fetched from the NBA's live CDN (cdn.nba.com) by `quantlab live-update` on this computer - the same "
+            f"play-by-play feed the pinned mirror archives, not pinned because the season is still being played. "
+            f"{live.get('built', 0)} of {live.get('final_in_schedule', 0)} finished games built (through "
+            f"{live.get('last_game_date', '-')}), {live.get('scheduled_games', 0)} games in the schedule. Unplayed games "
+            "are projected truly pregame: no inactive list and no starting fives exist yet, so availability is "
+            "estimated from missed-game streaks (plus the injury report you enter on the Slate page) and starters "
+            "are projected; this is less information than the backtest used (see docs/METHODOLOGY.md, current "
+            "season).")
     ax_path = PATHS.models / "availability_experiment.json"
     if ax_path.exists():
         ax = json.loads(ax_path.read_text(encoding="utf-8"))

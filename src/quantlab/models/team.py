@@ -176,10 +176,22 @@ def baseline_predictions(tg: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_team_model(cfg: TeamModelConfig | None = None, log=print) -> pd.DataFrame:
+    """Walk-forward predictions for every built game and for the live season's unplayed games (no result: they are
+    predicted from earlier games and never update the ratings)."""
+    from ..data.database import upcoming_team_games
     cfg = cfg or TeamModelConfig()
     d = PATHS.processed("all")
     tg = pd.read_parquet(d / "team_games.parquet")
     games = pd.read_parquet(d / "games.parquet")
+    up = upcoming_team_games()
+    if len(up):
+        home, away = up[up["is_home"]], up[~up["is_home"]]
+        g = home[["game_id", "season", "game_date"]].assign(
+            home_team_id=home["team_id"].to_numpy(), game_len_s=np.nan)
+        g = g.merge(away[["game_id", "team_id"]].rename(columns={"team_id": "away_team_id"}), on="game_id")
+        games = pd.concat([games, g], ignore_index=True)
+        tg = pd.concat([tg, up[["game_id", "team_id", "opp_team_id", "season", "game_date", "is_home", "b2b",
+                                "rest_days"]]], ignore_index=True)
     pr = attach_uncertainty(walk_forward(tg, games, cfg))
     PATHS.ensure(PATHS.models)
     pr.to_parquet(PATHS.models / "team_predictions.parquet", index=False)

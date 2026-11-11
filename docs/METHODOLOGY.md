@@ -9,6 +9,7 @@ Every rule, model and parameter in NBA Quant Lab, and which data each was fitted
 | History | 2020-21, 2021-22, 2022-23 | priors, training data, simulator structural constants (2021-22 and 2022-23, with 2023-24) |
 | Tuning | 2023-24 | the tuned hyper-parameters (half-lives and prior strengths of the EB player rates and the team style factors, team-model grid, usage exponent), the baselines' negative-binomial dispersion curves, the simulator's calibration and structural constants (with 2021-23), the blend weight; the gradient-boosting player models use fixed hyper-parameters |
 | Test | 2024-25, 2025-26 | scored with everything frozen (the final version; earlier versions were also scored on them before the review fixes) |
+| Current season | 2026-27 | projected with everything frozen (section 11); not scored or tuned, beyond a rehearsal of the projection path on 2025-26 |
 
 All predictions are **walk-forward**: the features of a forecast for a game on date *d* use only games on dates
 strictly before *d* (players and teams play at most once per day; league-level quantities are lagged one date;
@@ -16,7 +17,8 @@ same-day games never see each other). Two pieces of same-day information are use
 the lineups-known minutes model, the rotation rule behind the teammate context, the gradient-boosting player models'
 starter feature and the simulator's starting lineups; public about 30 minutes before tip-off) and teammate
 availability, which comes from who appeared in the game - the stand-in for the pregame inactive list, a remaining and
-measured leak (section 2).
+measured leak (section 2). Unplayed games of the current season have neither: they are projected from pregame
+information only (section 11).
 
 ---
 
@@ -272,3 +274,77 @@ correlation lift (joint / product).
   from the shipped model's (neither has the season-to-date / last-10 per-minute rates; both keep the own-team
   season-to-date averages and the neutral-opponent EB expectation), so the with-opponent MAE differs slightly from the
   shipped gradient-boosting model's (points 4.383 against 4.376).
+
+## 11. The current season (`quantlab live-update`, `live.py`, `sim/inputs.py`)
+
+**Update.** `quantlab live-update` fetches the season's new games (DATA.md, "The current season"), rebuilds the season
+and the database and re-runs the walk-forward pipeline over all seasons with every fitted parameter frozen: the
+feature store, the team model, the minutes models (for the current season trained on 2021-22 .. 2025-26, both
+variants, saved for re-projection), and the EB rates and team style factors with the half-lives and prior strengths
+read from `rate_params.json` and `team_factor_params.json`; the simulator constants and the blend weight are reused.
+Nothing is re-tuned and nothing about the current season is scored. On the rehearsal (602 finished games) an update
+without the download took about 90 s.
+
+**Unplayed games.** The unplayed games up to 10 days after the last finished game (`QUANTLAB_UPCOMING_DAYS`) get rows
+in every walk-forward table with nothing from the game: the team model's ratings through the last finished game and
+the schedule's rest days and back-to-backs; one feature row per candidate player - the team's pool, the players who
+appeared for it in the previous 25 days and not for another team since (the fringe-candidate rule of section 10,
+applied to everyone); EB rates and style factors as of the last finished game. Baselines are updated only by played
+games, so an unplayed game changes no one's history; its rows are recomputed by every update.
+
+**Information set** (`sim.inputs.pregame_team_spec`). The backtest's two pieces of same-day information do not exist
+yet, so each is projected:
+
+* **Availability.** There is no injury feed. A player's *missed-game streak* is the number of his team's games since
+  he last appeared (0 = he played the previous game). A rotation player (the lineup-blind rule of section 2) with a
+  streak of 3 or more is presumed out, and his teammates' availability context (section 2) counts him as absent; the
+  others are counted as available and play with the appearance rate of their streak, estimated on 2023-24 for
+  rotation players in their team's pool (`data/features/availability_priors.json`):
+
+  | Missed in a row | 0 | 1 | 2 | 3-4 | 5-9 | 10+ |
+  |---|---:|---:|---:|---:|---:|---:|
+  | Appeared (2023-24) | 91.2% | 49.3% | 29.8% | 24.3% | 11.0% | 5.1% |
+  | Player-games | 22,461 | 1,878 | 886 | 1,012 | 1,205 | 216 |
+
+  Fringe candidates play with their share of the team's recent games, as in the backtest. In each simulated game a
+  player drawn as not playing sits, and the simulator's per-game minutes normalisation gives his minutes to the
+  players who play (section 6).
+* **The injury report** is the user's: the Slate page's injury report (or `data/live_overrides.json`: `out`,
+  `available`, `p_play`) applies to every unplayed game. An `out` player is removed and, if the pregame context had
+  counted him as available, his teammates' minutes are re-projected without him (the lineup-blind per-season model
+  with the availability features recomputed, as for scenarios, section 8); an `available` player plays with
+  probability 1 (or his `p_play`).
+* **Starters.** The starting five is announced about 30 minutes before tip-off, so it is projected: the team's five
+  in its last game, among the available rotation players, with vacancies filled by start rate (last 20 games) and then
+  by projected minutes. The Scenario lab can set the announced five.
+* **Minutes** come from the lineup-blind model (section 4), conditional on playing; the team level (pace, efficiency,
+  the blend) is unchanged.
+
+**Rehearsal** (`scripts/rehearse_live.py`, results in `docs/pregame_rehearsal.json`). The CDN refused this build
+environment, so the live path was rehearsed on 2025-26: the season was written in the live feed's format with the
+games before 2026-01-15 final and the rest scheduled, `quantlab live-update --skip-fetch` ran on it unchanged, and
+every unplayed game in the following 7 days (53 games) was projected pregame (2,000 simulations each) and scored
+against what happened, next to the backtest's projections of the same games (`sim_blend`, which know who appeared and
+who started). Per player-game of the players who appeared (1,096 in both):
+
+| MAE | MIN | PTS | REB | AST | 3PM | STL | BLK | TOV | PRA |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Pregame (rehearsal) | 5.153 | 4.575 | 1.894 | 1.372 | 0.926 | 0.716 | 0.522 | 0.894 | 5.973 |
+| Backtest (appearances and starters known) | 4.102 | 4.329 | 1.793 | 1.362 | 0.915 | 0.708 | 0.523 | 0.883 | 5.489 |
+
+* **Minutes are the gap** (+26%; points +6%, PRA +9%, the other statistics +1% to +6%, blocks level). Projected
+  minutes run 0.49 high on average (backtest 0.19): +1.03 for the players who started (backtest +0.47) and 0.00 for the
+  bench (-0.07).
+* **Starters**: 4.0 of the 5 projected starters started, on average.
+* **Availability**: 16.0% of the projected rotation players did not appear, against 14.6% implied by their
+  appearance probabilities (mean 85.4%). 56 of the 1,152 player-games (4.9%, 3.8% of the minutes) were not projected:
+  22 by players presumed out after three or more missed games who returned, 34 by players not in the pool (signings,
+  call-ups, players traded in before their first game for the team, returns after more than 25 days).
+* **Team level**: spread RMSE 14.90 (backtest simulation 14.79, team model 14.81) and total RMSE 18.54 (18.61, 18.49) -
+  indistinguishable on 53 games.
+* **Days ahead**: within the week there is no clear trend with the days ahead (points MAE by day 4.27 - 5.18, in no
+  order; the slates differ more than a few days of staleness matter). Updating daily still helps: the streaks and the
+  last starting five change with every game.
+
+The backtest numbers in REPORT are therefore an optimistic bound for a real slate; entering the injury report and the
+announced starters closes part of the gap.

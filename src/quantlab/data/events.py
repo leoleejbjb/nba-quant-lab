@@ -44,6 +44,79 @@ def read_raw_pbp(archive: Path, member: str, game_prefix: int) -> pd.DataFrame:
     return df[(gid // 100_000) == game_prefix].reset_index(drop=True)
 
 
+def actions_frame(doc: dict) -> pd.DataFrame:
+    """One liveData play-by-play document (``cdn.nba.com/.../playbyplay_<id>.json``) as the mirror's CSV rows: the
+    mirror is a flat copy of ``game.actions`` with the game id added and list fields joined with ', '."""
+    game = doc["game"]
+    df = pd.DataFrame(game.get("actions") or [])
+    if "qualifiers" in df:
+        df["qualifiers"] = df["qualifiers"].map(
+            lambda q: ", ".join(str(x) for x in q) if isinstance(q, list) and q else (q if isinstance(q, str) and q
+                                                                                    else pd.NA))
+    df["gameId"] = int(game["gameId"])
+    for c in RAW_COLUMNS:
+        if c not in df.columns:
+            df[c] = pd.NA
+    return df[RAW_COLUMNS]
+
+
+def read_live_pbp(docs, game_prefix: int) -> pd.DataFrame:
+    """Live play-by-play documents -> the same raw table ``read_raw_pbp`` returns for the pinned mirror."""
+    frames = [actions_frame(d) for d in docs]
+    if not frames:
+        return pd.DataFrame(columns=RAW_COLUMNS)
+    df = pd.concat(frames, ignore_index=True)
+    gid = pd.to_numeric(df["gameId"], errors="coerce").fillna(0).astype("int64")
+    return df[(gid // 100_000) == game_prefix].reset_index(drop=True)
+
+
+SCHEDULE_STATUS = {1: "scheduled", 2: "live", 3: "final"}
+
+
+def read_schedule(doc: dict, season: str, game_prefix: int) -> pd.DataFrame:
+    """The league schedule (``cdn.nba.com/static/json/staticData/scheduleLeagueV2.json``) -> one row per
+    regular-season game: date (US Eastern), tip-off time (UTC), teams, status (scheduled / live / final / postponed
+    / tbd) and the score of finished games."""
+    try:
+        dates = doc["leagueSchedule"]["gameDates"]
+    except (KeyError, TypeError):
+        raise ValueError("unexpected schedule format: no leagueSchedule.gameDates (top-level keys: "
+                         f"{sorted(doc) if isinstance(doc, dict) else type(doc).__name__})") from None
+    rows = []
+    for gd in dates:
+        for g in gd.get("games") or []:
+            gid = int(g["gameId"])
+            if gid // 100_000 != game_prefix:
+                continue                                   # preseason, play-in, playoffs, Cup final
+            home, away = g.get("homeTeam") or {}, g.get("awayTeam") or {}
+            code = int(g.get("gameStatus") or 0)
+            text = str(g.get("gameStatusText") or "")
+            status = SCHEDULE_STATUS.get(code, "unknown")
+            if str(g.get("postponedStatus") or "").upper() == "P" or "PPD" in text.upper() or "POSTPONED" in text.upper():
+                status = "postponed"
+            hid, aid = int(home.get("teamId") or 0), int(away.get("teamId") or 0)
+            if not hid or not aid:
+                status = "tbd"                             # e.g. NBA Cup knockout placeholders
+            rows.append({"game_id": gid, "season": season, "status": status, "status_text": text,
+                         "date_est": g.get("gameDateEst"), "tip": g.get("gameDateTimeUTC") or g.get("gameDateUTC"),
+                         "home_team_id": hid, "away_team_id": aid,
+                         "home_team": home.get("teamTricode"), "away_team": away.get("teamTricode"),
+                         "home_score": home.get("score"), "away_score": away.get("score")})
+    cols = ["game_id", "season", "game_date", "tip_utc", "home_team_id", "away_team_id", "home_team", "away_team",
+            "status", "status_text", "home_score", "away_score"]
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(rows)
+    df["tip_utc"] = pd.to_datetime(df["tip"], utc=True, errors="coerce", format="ISO8601")
+    est = pd.to_datetime(df["date_est"], errors="coerce", format="ISO8601", utc=True).dt.tz_localize(None).dt.normalize()
+    # the Eastern date; when it is missing, the same -6 h rule game_table applies to tip times
+    df["game_date"] = est.fillna((df["tip_utc"] - pd.Timedelta(hours=6)).dt.tz_localize(None).dt.normalize())
+    for c in ("home_score", "away_score"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
+    df.loc[df["status"] != "final", ["home_score", "away_score"]] = np.nan
+    return df[cols].drop_duplicates("game_id").sort_values(["game_date", "tip_utc", "game_id"]).reset_index(drop=True)
+
+
 def parse_clock(clock: pd.Series) -> pd.Series:
     """'PT11M41.00S' -> 701.0 seconds remaining in the period."""
     parts = clock.astype("string").str.extract(r"^PT(\d+)M(\d+(?:\.\d+)?)S$")

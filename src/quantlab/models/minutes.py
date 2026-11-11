@@ -32,7 +32,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from ..config import PATHS
+from ..config import PATHS, TEST_SEASONS, TUNING_SEASON
 
 FEATURES = ["exp_min", "min_l3", "min_l5", "min_l10", "last_min", "season_min_avg", "base_min", "rotation",
             "min7", "min60", "start_rate", "last_start", "days_since_played", "rest_days", "b2b",
@@ -158,15 +158,34 @@ def residual_table(pred: pd.DataFrame, col: str = "pred_gbm_norm") -> pd.DataFra
     return pd.DataFrame(rows)
 
 
+def team_rest() -> pd.DataFrame:
+    """Rest days / back-to-backs per team-game: built games from team_games, the live season's unplayed games from
+    its schedule."""
+    from ..data.database import upcoming_team_games
+    tg = pd.read_parquet(PATHS.processed("all") / "team_games.parquet", columns=["game_id", "team_id", "rest_days", "b2b"])
+    up = upcoming_team_games()
+    if len(up):
+        tg = pd.concat([tg, up[["game_id", "team_id", "rest_days", "b2b"]]], ignore_index=True)
+    return tg
+
+
+def projection_seasons(f: pd.DataFrame) -> list[str]:
+    """Seasons that get walk-forward minutes: the tuning and test seasons, plus any later (live) season."""
+    return [TUNING_SEASON, *TEST_SEASONS] + sorted(s for s in f["season"].unique() if s > TEST_SEASONS[-1])
+
+
 def run_minutes(log=print) -> pd.DataFrame:
     feats = pd.read_parquet(PATHS.features / "player_asof.parquet")
     tp = pd.read_parquet(PATHS.models / "team_predictions.parquet")
-    tg = pd.read_parquet(PATHS.processed("all") / "team_games.parquet")
-    f = minutes_frame(feats, tp, tg)
-    pred, models = walk_forward_minutes(f, ["2023-24", "2024-25", "2025-26"], log=log)
-    ev = evaluate_minutes(pred[pred["played"]])
+    f = minutes_frame(feats, tp, team_rest())
+    pred, models = walk_forward_minutes(f, projection_seasons(f), log=log)
+    if "scheduled" in pred:          # unplayed games: starters unknown, only the lineup-blind model applies
+        sch = pred["scheduled"].fillna(False).astype(bool)
+        pred.loc[sch, ["pred_gbm", "pred_gbm_norm"]] = np.nan
+    ev = evaluate_minutes(pred[pred["played"] & pred["season"].isin([TUNING_SEASON, *TEST_SEASONS])])
     PATHS.ensure(PATHS.models)
     keep = ["game_id", "person_id", "team_id", "season", "game_date", "min", "starter", "rotation", "played"] + \
+           [c for c in ("rotation_pre", "scheduled", "missed_streak") if c in pred] + \
            [c for c in pred.columns if c.startswith("pred_")]
     pred[keep].to_parquet(PATHS.models / "minutes_predictions.parquet", index=False)
     ev.to_csv(PATHS.models / "minutes_eval.csv", index=False)
@@ -177,30 +196,33 @@ def run_minutes(log=print) -> pd.DataFrame:
     for name, cols in (("lineups_known", FEATURES + STARTER_FEATURES), ("pregame", FEATURES_PRE)):
         # written from Python (LightGBM's own file I/O breaks on non-ASCII Windows paths)
         (PATHS.models / f"minutes_gbm_{name}.txt").write_text(_fit(played, cols).model_to_string(), encoding="utf-8")
-    imp = pd.Series(models["2025-26"]["lineups_known"].feature_importance("gain"),
+    imp = pd.Series(models[TEST_SEASONS[-1]]["lineups_known"].feature_importance("gain"),
                     index=FEATURES + STARTER_FEATURES).sort_values(ascending=False)
     (PATHS.models / "minutes_importance.json").write_text(json.dumps((imp / imp.sum()).round(4).to_dict(), indent=2), encoding="utf-8")
     return ev
 
 
-def save_season_models(log=print) -> None:
-    """Persist, per season S, the lineups-known minutes model trained on seasons < S, plus the feature
-    frame, so the scenario engine can re-project minutes after a lineup change without leakage."""
+def save_season_models(seasons=None, log=print) -> None:
+    """Persist, per season S, the minutes models trained on seasons < S (lineups-known, and lineup-blind for the
+    live season's unplayed games), plus the feature frame, so the scenario engine can re-project minutes after a
+    lineup or availability change without leakage."""
     feats = pd.read_parquet(PATHS.features / "player_asof.parquet")
     tp = pd.read_parquet(PATHS.models / "team_predictions.parquet")
-    tg = pd.read_parquet(PATHS.processed("all") / "team_games.parquet")
-    f = minutes_frame(feats, tp, tg)
+    f = minutes_frame(feats, tp, team_rest())
     cols = FEATURES + STARTER_FEATURES
-    keep = ["game_id", "person_id", "team_id", "season", "played", "min", "starter_raw"] + \
-           sorted(set(cols) | {"avail_exp_min", "base_used", "team_used_base", "fringe_base_min"})
+    keep = ["game_id", "person_id", "team_id", "season", "played", "min", "starter_raw", "scheduled"] + \
+           sorted(set(cols) | set(FEATURES_PRE) | {"avail_exp_min", "base_used", "team_used_base", "fringe_base_min",
+                                                 "avail_exp_min_pre", "fringe_base_min_pre"})
     f["starter_raw"] = f["starter"]
     f[[c for c in keep if c in f.columns]].to_parquet(PATHS.models / "minutes_features.parquet", index=False)
     played = f[f["played"]]
-    seasons = sorted(played["season"].unique())
-    for s in seasons[2:]:
-        train = played[(played["season"] < s) & (played["season"] > seasons[0])]
+    all_seasons = sorted(set(played["season"]) | set(f["season"]))
+    for s in (all_seasons[2:] if seasons is None else seasons):
+        train = played[(played["season"] < s) & (played["season"] > all_seasons[0])]
         (PATHS.models / f"minutes_gbm_{s}.txt").write_text(_fit(train, cols).model_to_string(), encoding="utf-8")
-        log(f"[minutes] saved model for {s} ({len(train):,} rows)")
+        (PATHS.models / f"minutes_gbm_pre_{s}.txt").write_text(_fit(train, FEATURES_PRE).model_to_string(),
+                                                              encoding="utf-8")
+        log(f"[minutes] saved models for {s} ({len(train):,} rows)")
 
 
 def exact_frame(f: pd.DataFrame) -> pd.DataFrame:

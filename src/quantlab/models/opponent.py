@@ -109,13 +109,29 @@ def compute_factors(t: pd.DataFrame, games: pd.DataFrame, params: dict | None = 
     return out, tuned
 
 
-def run_opponent(log=print) -> dict:
+def run_opponent(tune: bool = True, log=print) -> dict:
+    """Team style factors for every team-game, including the live season's unplayed games (zero-count rows: they get
+    factors from earlier games and add nothing). ``tune=False`` reuses the saved half-lives / strengths."""
+    from ..data.database import upcoming_team_games
+    from ..features.asof import time_axis
     d = PATHS.processed("all")
     tg = pd.read_parquet(d / "team_games.parquet")
-    games = pd.read_parquet(d / "games.parquet")
+    up = upcoming_team_games()
+    games = time_axis(pd.read_parquet(d / "games.parquet"), up)
+    if len(up):
+        rows = up[["game_id", "team_id", "opp_team_id", "season", "game_date"]].copy()
+        num = [c for c in tg.columns if c not in rows.columns and pd.api.types.is_numeric_dtype(tg[c])
+               and not pd.api.types.is_bool_dtype(tg[c])]
+        for c in num:
+            rows[c] = 0.0
+        tg = pd.concat([tg, rows], ignore_index=True)
     t = team_factor_frame(tg, games)
-    fac, tuned = compute_factors(t, games, log=log)
+    params = None
+    if not tune:
+        params = json.loads((PATHS.models / "team_factor_params.json").read_text(encoding="utf-8"))
+    fac, tuned = compute_factors(t, games, params=params, log=log)
     PATHS.ensure(PATHS.models)
     fac.to_parquet(PATHS.models / "team_factors.parquet", index=False)
-    (PATHS.models / "team_factor_params.json").write_text(json.dumps(tuned, indent=2), encoding="utf-8")
+    if tune:
+        (PATHS.models / "team_factor_params.json").write_text(json.dumps(tuned, indent=2), encoding="utf-8")
     return tuned

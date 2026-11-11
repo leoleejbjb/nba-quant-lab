@@ -77,11 +77,16 @@ def _combine(df: pd.DataFrame, cols: tuple, suffix: str = "", prefix: str = "") 
     return np.maximum(out, 0.0)
 
 
-def league_prior(pg: pd.DataFrame, games: pd.DataFrame, spec: RateSpec, halflife: float = 60.0) -> pd.Series:
-    """Decayed league-average rate as of each date (strictly earlier dates), indexed by game_date."""
+def league_prior(pg: pd.DataFrame, games: pd.DataFrame, spec: RateSpec, halflife: float = 60.0,
+                 dates=None) -> pd.Series:
+    """Decayed league-average rate as of each date (strictly earlier dates), indexed by game_date. ``dates`` adds
+    dates without finished games (the live season's upcoming games), which get the rate from earlier dates."""
     d = pg[pg["played"]]
     daily = pd.DataFrame({"x": _combine(d, spec.num), "e": _combine(d, spec.den), "game_date": d["game_date"]})
     daily = daily.groupby("game_date")[["x", "e"]].sum().sort_index()
+    if dates is not None:
+        daily = daily.reindex(daily.index.union(pd.DatetimeIndex(pd.to_datetime(pd.Series(dates).unique())))) \
+            .fillna(0.0)
     t = effective_time(pd.Series(daily.index, index=daily.index), games).to_numpy()
     lam = np.log(2) / halflife
     sx = se = 0.0
@@ -147,7 +152,7 @@ def compute_rates(rf: pd.DataFrame, pg: pd.DataFrame, games: pd.DataFrame, param
     out = rf[["game_id", "person_id", "team_id", "opp_team_id", "season", "game_date"]].copy()
     for spec in RATES:
         p = params[spec.name]
-        prior = league_prior(pg, games, spec)
+        prior = league_prior(pg, games, spec, dates=rf["game_date"])
         mu = rf["game_date"].map(prior).to_numpy()
         X = _combine(rf, spec.num, f"_h{p['halflife']}")
         E = _combine(rf, spec.den, f"_h{p['halflife']}")
@@ -157,15 +162,22 @@ def compute_rates(rf: pd.DataFrame, pg: pd.DataFrame, games: pd.DataFrame, param
     return out
 
 
-def run_rates(log=print) -> dict:
+def run_rates(tune: bool = True, log=print) -> dict:
+    """Tune the half-lives / prior strengths on the tuning season (``tune``) or reuse the saved ones (live updates),
+    then write rates for every feature row - played, pregame candidates and the live season's unplayed games."""
+    from ..data.database import upcoming_team_games
+    from ..features.asof import time_axis
     d = PATHS.processed("all")
     pg = pd.read_parquet(d / "player_games.parquet")
-    games = pd.read_parquet(d / "games.parquet")
+    games = time_axis(pd.read_parquet(d / "games.parquet"), upcoming_team_games())
     feats = pd.read_parquet(PATHS.features / "player_asof.parquet")
     rf = build_rate_frame(feats, pg)
-    params = tune_rates(rf, pg, games, log=log)
     PATHS.ensure(PATHS.models)
-    (PATHS.models / "rate_params.json").write_text(json.dumps(params, indent=2), encoding="utf-8")
+    if tune:
+        params = tune_rates(rf, pg, games, log=log)
+        (PATHS.models / "rate_params.json").write_text(json.dumps(params, indent=2), encoding="utf-8")
+    else:
+        params = json.loads((PATHS.models / "rate_params.json").read_text(encoding="utf-8"))
     # rates for all candidate rows (played or not) so that the simulator can use them pregame
     allrows = feats.copy()
     rates = compute_rates(allrows, pg, games, params)

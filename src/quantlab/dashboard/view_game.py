@@ -14,8 +14,9 @@ from quantlab.live import box_score_table, team_totals
 
 def _game_picker(pr) -> int | None:
     sl = pr.slate(st.session_state["asof_date"])
+    sl = sl[sl["projectable"]] if "projectable" in sl else sl
     if sl.empty:
-        st.info("No games on the selected date.")
+        st.info("No games to project on the selected date.")
         return None
     labels = {int(r.game_id): f"{r.away_team} @ {r.home_team}" for r in sl.itertuples()}
     cur = state.selected_game()
@@ -67,7 +68,8 @@ def render() -> None:
         return
     proj = state.run_projection(gid, st.session_state["n_sims"], st.session_state["environment"])
     res = proj.result
-    g = pr.store.games.loc[gid]
+    g = pr.game_info(gid)
+    final = pr.is_final(gid)
     home, away = res.game.home, res.game.away
     sc = res.score.astype(float)
     mg, tot = sc[:, 0] - sc[:, 1], sc.sum(axis=1)
@@ -81,11 +83,28 @@ def render() -> None:
     c[4].metric("Overtime", style.pct(float((res.n_ot > 0).mean())),
                 help="Share of simulated games that go to overtime. The simulator understates overtime: regulation "
                      "ties are rarer than in real games (see the Validation page).")
-    tp = pr.store.tp.loc[gid]
+    tp = pr.store.tp.loc[gid] if gid in pr.store.tp.index else None
+    team_line = (f"team model: spread {-tp['exp_margin']:+.1f}, total {tp['exp_total']:.1f}, pace {tp['pace']:.1f}"
+                 if tp is not None else "no team-model line")
+    if final:
+        result = f"**final {away.name} {int(g['away_pts'])} – {int(g['home_pts'])} {home.name}**"
+    else:
+        from quantlab.dashboard.view_slate import result_label
+        result = f"**not played yet ({result_label(pd.Series({**g.to_dict(), 'is_final': False}))})**"
     st.caption(f"{pd.Timestamp(g['game_date']):%a %b %d, %Y} · {res.n:,} simulated games · environment: "
-               f"{st.session_state['environment']} · team model: spread {-tp['exp_margin']:+.1f}, total "
-               f"{tp['exp_total']:.1f}, pace {tp['pace']:.1f} · **final {away.name} {int(g['away_pts'])} – "
-               f"{int(g['home_pts'])} {home.name}**")
+               f"{st.session_state['environment']} · {team_line} · {result}")
+    if not final:
+        meta = proj.calibration.get("pregame", {})
+        names = pr.store.names
+        lines = []
+        for t, team in ((1, away), (0, home)):
+            m = meta.get("home" if t == 0 else "away", {})
+            st_ = ", ".join(names.get(p, str(p)) for p in m.get("starters", []))
+            po = ", ".join(names.get(p, str(p)) for p in m.get("presumed_out", [])) or "none"
+            lines.append(f"**{team.name}** projected starters ({m.get('starters_source', '?')}): {st_}; presumed out "
+                         f"(missed three or more games in a row): {po}")
+        st.info("Pregame projection: nothing from this game is used. " + " · ".join(lines) + ". Mark the injury "
+                "report on the Slate page; P(play) below includes each player's chance of not playing.")
 
     for t, team in ((1, away), (0, home)):
         st.subheader(f"{team.name} {'(home)' if t == 0 else '(away)'}")
@@ -120,9 +139,10 @@ def render() -> None:
         h, e = np.histogram(tot, bins=bins)
         fig = go.Figure(go.Bar(x=(e[:-1] + e[1:]) / 2, y=h / len(tot), marker_color=tok["s1"],
                                hovertemplate="total %{x:.0f}: %{y:.1%}<extra></extra>"))
-        fig.add_vline(x=float(tp["exp_total"]), line_color=tok["ink2"], line_width=1)
-        fig.add_annotation(x=float(tp["exp_total"]), y=1.02, yref="paper", text="team model", showarrow=False,
-                           font=dict(color=tok["ink2"]))
+        if tp is not None:
+            fig.add_vline(x=float(tp["exp_total"]), line_color=tok["ink2"], line_width=1)
+            fig.add_annotation(x=float(tp["exp_total"]), y=1.02, yref="paper", text="team model", showarrow=False,
+                               font=dict(color=tok["ink2"]))
         style.base_layout(fig, 300, "Total points", "points", "share of games", legend=False)
         fig.update_yaxes(tickformat=".0%")
         st.plotly_chart(fig, use_container_width=True)
@@ -165,6 +185,8 @@ def render() -> None:
         col.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
                       column_config={"Min / game": st.column_config.NumberColumn(format="%.1f")})
 
+    if not final:
+        return
     with st.expander("Projection vs. actual box score (historical game)"):
         act = pr.actual_box(gid)
         rows = []

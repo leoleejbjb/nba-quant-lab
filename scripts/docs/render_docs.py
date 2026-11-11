@@ -132,6 +132,22 @@ pts_crps_txt = ", ".join(f"{MODEL[m]} {crps_pts[m]:.3f}" for m in crps_order)
 
 
 # ---------------------------------------------------------------- README results block
+# ---------------------------------------------------------------- current-season rehearsal (scripts/rehearse_live.py)
+RH = json.loads((ROOT / "docs" / "pregame_rehearsal.json").read_text(encoding="utf-8"))
+RM = RH["mae"]
+
+
+def rh_gap(stat):
+    return f"{100 * (RM[stat]['pregame'] / RM[stat]['asof'] - 1):+.0f}%"
+
+
+# claims: pregame is less accurate than the as-of backtest, mostly through minutes; team level indistinguishable
+assert all(RM[s]["pregame"] > RM[s]["asof"] for s in ("min", "pts", "pra")), "rehearsal: pregame no longer worse"
+assert max(RM, key=lambda s: RM[s]["pregame"] / RM[s]["asof"]) == "min", "rehearsal: minutes no longer the main gap"
+rh_team_gap = max(abs(RH["team"][k]["pregame"] - RH["team"][k][b]) for k in ("margin_rmse", "total_rmse")
+                  for b in ("asof", "team_model_day_before"))
+assert rh_team_gap < 0.25, "rehearsal: team-level RMSE gap no longer small"
+
 readme_block = f"""## Results (walk-forward, test seasons 2024-25 and 2025-26)
 
 Everything was tuned on 2023-24; the final version was scored, with everything frozen, on
@@ -192,10 +208,20 @@ seasons and is measured instead (item 2), and overtime frequency, fixed only par
 | **Possession simulation (shipped blend)** | {mae['sim_blend']:.3f} | {crps_pts['sim_blend']:.3f} | {P('sim_blend', 'pts', 'pit_dev')} | {crps_pra['sim_blend']:.3f} | {bl_m:.3f} | {bl_t:.3f} |
 | Team model | | | | | {tm_m:.3f} | {tm_t:.3f} |
 
-**Live data.** The current 2026-27 season is not in the pinned sources and the NBA's CDN refused this environment, so
-"upcoming games" are the slate of any as-of date in 2023-24 .. 2025-26, projected from earlier games plus that game's
-starting five and who appeared (the inactive-list stand-in, Results 2) - the same inputs and simulator as the
-backtest - with the advantage that it can be checked against what happened ([docs/DATA.md](docs/DATA.md)).
+**Upcoming games (current season).** Unplayed games are projected truly pregame - nothing from the game itself:
+the starting five is projected (the team's last one), availability comes from missed-game streaks (there is no injury
+feed; the injury report can be entered in the dashboard) and minutes from the lineup-blind model. Rehearsed on
+{RH['season']} through the live feed's format and the real update pipeline, with every game from {RH['cutoff']} on
+hidden, the {RH['games']} games of the following {RH['horizon_days']} days ({RH['player_games_played']:,} player-games)
+had minutes MAE {RM['min']['pregame']:.2f} against {RM['min']['asof']:.2f} for the backtest's projections of the same
+games, which know who appeared and who started ({rh_gap('min')}), points {RM['pts']['pregame']:.2f} against
+{RM['pts']['asof']:.2f} ({rh_gap('pts')}) and PRA {RM['pra']['pregame']:.2f} against {RM['pra']['asof']:.2f}
+({rh_gap('pra')}); {RH['starters_correct_of_5']:.1f} of 5 projected starters started and
+{pct(RH['rotation_projected_not_appearing'], '.0f')} of the projected rotation players did not play. Spread and total
+RMSE were within {rh_team_gap:.2f} points of the backtest simulation's and the team model's ({RH['games']} games
+are too few to tell them apart). The
+backtest results above are therefore optimistic for a real slate, mostly through minutes
+([docs/pregame_rehearsal.json](docs/pregame_rehearsal.json), [METHODOLOGY](docs/METHODOLOGY.md) section 11).
 
 """
 

@@ -67,7 +67,8 @@ def render() -> None:
     st.title("Scenario lab")
     st.caption("Edit the rosters and run the scenario. The baseline and the scenario are simulated with the same "
                "random seed (common random numbers), which reduces but does not remove Monte Carlo noise in the "
-               "differences; small changes can still be noise.")
+               "differences; small changes can still be noise. For an unplayed game the baseline already includes "
+               "the injury report from the Slate page; tick Starter for an announced starting five.")
     gid = _game_picker(pr)
     if gid is None:
         return

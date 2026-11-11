@@ -14,6 +14,7 @@
       test              run the test suite
       dashboard         start the dashboard at http://localhost:8501 (Ctrl+C to stop)
       all               data, models, backtest, report
+      live              current season: fetch new games from cdn.nba.com, rebuild it, refresh the models
       quantlab <args>   run any quantlab command, e.g.  .\make.ps1 quantlab project --game-id 22501132
       package           git bundle + source zip in dist\
       clean-data        delete the downloaded and generated data (asks first)
@@ -238,6 +239,11 @@ function Invoke-Target([string]$Name) {
         "all" {
             foreach ($t in "data", "models", "backtest", "report") { Invoke-Target $t }
             Write-Host "Pipeline complete. Start the dashboard with:  .\make.ps1 dashboard" -ForegroundColor Green
+        }
+
+        "live" {
+            Write-Step "Live: fetch new games of the current season, rebuild it, refresh features and models"
+            Invoke-Quantlab (@("live-update") + $Rest)
         }
 
         "quantlab" {

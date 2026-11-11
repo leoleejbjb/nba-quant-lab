@@ -12,6 +12,8 @@ use 1,200 simulations per game) through a compiled possession simulator with rea
 time and overtime. From the joint simulations it prices player
 props at any line (pushes included), double/triple-doubles and same-game combinations, and re-runs any matchup with
 injuries, minutes limits or lineup changes. Everything is validated walk-forward against what actually happened.
+For the current season (2026-27) it fetches the games played so far from the NBA's live feed and projects every
+upcoming game truly pregame, from projected starting fives and availability.
 
 ![Projected box score](docs/screenshots/game.png)
 
@@ -75,10 +77,20 @@ seasons and is measured instead (item 2), and overtime frequency, fixed only par
 | **Possession simulation (shipped blend)** | 4.408 | 3.080 | 0.034 | 4.016 | 14.305 | 18.496 |
 | Team model | | | | | 14.334 | 18.484 |
 
-**Live data.** The current 2026-27 season is not in the pinned sources and the NBA's CDN refused this environment, so
-"upcoming games" are the slate of any as-of date in 2023-24 .. 2025-26, projected from earlier games plus that game's
-starting five and who appeared (the inactive-list stand-in, Results 2) - the same inputs and simulator as the
-backtest - with the advantage that it can be checked against what happened ([docs/DATA.md](docs/DATA.md)).
+**Upcoming games (current season).** Unplayed games are projected truly pregame - nothing from the game itself:
+the starting five is projected (the team's last one), availability comes from missed-game streaks (there is no injury
+feed; the injury report can be entered in the dashboard) and minutes from the lineup-blind model. Rehearsed on
+2025-26 through the live feed's format and the real update pipeline, with every game from 2026-01-15 on
+hidden, the 53 games of the following 7 days (1,152 player-games)
+had minutes MAE 5.15 against 4.10 for the backtest's projections of the same
+games, which know who appeared and who started (+26%), points 4.57 against
+4.33 (+6%) and PRA 5.97 against 5.49
+(+9%); 4.0 of 5 projected starters started and
+16% of the projected rotation players did not play. Spread and total
+RMSE were within 0.12 points of the backtest simulation's and the team model's (53 games
+are too few to tell them apart). The
+backtest results above are therefore optimistic for a real slate, mostly through minutes
+([docs/pregame_rehearsal.json](docs/pregame_rehearsal.json), [METHODOLOGY](docs/METHODOLOGY.md) section 11).
 
 ## Quick start
 
@@ -94,8 +106,26 @@ make backtest    # simulation backtests: 2023-24 -> blend weight -> blend; 2024-
 make report      # baselines, GBM, matchup ablation, team-first model, summary, FINDINGS    (~15 min)
 make docs        # re-render README results, docs/REPORT.md and docs/report.html from the summary
 make dashboard   # http://localhost:8501
-make test        # 38 tests
+make test        # 52 tests
 ```
+
+**Current season.** After the pipeline has run once (`make data models` is enough to start; `make backtest` chooses
+the blend weight, 0.5 until then), `make live` fetches the 2026-27 schedule and the play-by-play of every finished
+game from cdn.nba.com, rebuilds the season and refreshes features and models with the fitted parameters (a few
+minutes the first time; later runs fetch only new games). Run it whenever new games have been played, then:
+
+```bash
+make live                                    # = .venv/bin/quantlab live-update
+.venv/bin/quantlab slate --date today        # every player's projected line for today's games -> projections_<date>.csv
+.venv/bin/quantlab project --game-id <id>    # one upcoming game: box score, score distribution, projected starters
+make dashboard                               # opens on the next unplayed date; enter the injury report on the Slate
+```
+
+The game ids are printed by `quantlab slate`. There is no injury feed: a player who missed his team's last three
+games is presumed out and the others play with their missed-game streak's appearance rate, so mark the official
+injury report on the Slate page (or in `data/live_overrides.json`) before projecting. Requests to cdn.nba.com
+identify the program honestly and are never retried under another identity; if the CDN refuses a machine (cloud
+machines are often refused - this build environment was), the update stops with a message.
 
 **Windows (PowerShell).** `make.ps1` runs the same targets. Install [Git](https://git-scm.com/download/win), the
 [Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) (numba and LightGBM need
@@ -112,10 +142,16 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force   # let this w
 ```
 
 `.\make.ps1 help` lists every target; `.\make.ps1 quantlab <command> [options]` runs any `quantlab` command (for
-example `.\make.ps1 quantlab project --game-id 22501132`).
+example `.\make.ps1 quantlab project --game-id 22501132`). For the current season:
 
-Project one game from the command line (pregame inputs - earlier games and the starting five - except that
-availability is taken from who appeared in the game, the inactive-list stand-in described in Results 2):
+```powershell
+.\make.ps1 live                               # fetch new 2026-27 games, rebuild, refresh
+.\make.ps1 quantlab slate --date today        # projections_<date>.csv
+.\make.ps1 dashboard
+```
+
+Project a finished game from the command line, as backtested (earlier games and the starting five, with availability
+taken from who appeared in the game, the inactive-list stand-in described in Results 2):
 
 ```bash
 .venv/bin/quantlab project --game-id 22501132 --n-sims 20000
@@ -141,7 +177,9 @@ availability is taken from who appeared in the game, the inactive-list stand-in 
 | `quantlab blendweight` | Choose the blend's team-model weight on the tuning season (`data/models/integration.json`). |
 | `quantlab baselines` / `ablation` / `topdown` | Baselines + gradient boosting; the nested matchup ablation; the team-first reconciliation architecture. |
 | `quantlab report` | `data/backtest/summary.json` and `docs/FINDINGS_DATA.md`. |
-| `quantlab project` | Projected box scores, score distribution and a prop for one game; `--out` for scenarios. |
+| `quantlab project` | Projected box scores, score distribution and a prop for one game (an upcoming game is projected pregame); `--out` for scenarios. |
+| `quantlab live-update` | Current season: fetch new games from cdn.nba.com (`--skip-fetch` rebuilds from the files already fetched), rebuild the season, refresh features and models with the fitted parameters, give the next 10 days' games pregame inputs. |
+| `quantlab slate` | Every player's projected line (mean and 10th-90th percentile) for all games on a date, as a CSV (`--date today`). |
 | `quantlab dashboard` | Streamlit dashboard. |
 | `quantlab sql "SELECT ..."` | DuckDB over every processed table. |
 
@@ -168,19 +206,20 @@ flowchart LR
 
 ```
 src/quantlab/
-  data/        sources, download, events, lineups, possessions, game (box scores + exposures), build, database,
-               warehouse (DuckDB views for `quantlab sql`)
+  data/        sources, download, cdn (current-season fetcher), events, lineups, possessions, game (box scores +
+               exposures), build, database, warehouse (DuckDB views for `quantlab sql`)
   features/    asof.py - walk-forward pregame feature store (incl. pregame deep-bench candidates, availability variants)
   models/      team.py, minutes.py, rates.py, opponent.py
   sim/         core.py (numba kernel), engine.py (spec, calibration, invariants), inputs.py, props.py,
                scenario.py, constants.py
-  eval/        backtest.py, baselines.py, topdown.py, report.py, writeup.py
+  eval/        backtest.py, baselines.py, topdown.py, report.py, writeup.py, pregame.py (current-season rehearsal)
   dashboard/   Streamlit app (slate, box score, player & props, scenario lab, comparison, validation, data)
-  live.py      projection service (as-of-date slates, scenarios with minutes re-projection)
+  live.py      projection service (slates of finished and upcoming games, injury report, scenarios with minutes
+               re-projection)
   cli.py, config.py   command line; paths, seasons and the tuning/test split
-scripts/       run_backtests.py, make_report_page.py (docs/report.html), docs/ (README results and REPORT renderers),
-               package.sh
-tests/         38 tests: PBP rules, leakage, simulator invariants, props, scenarios, review regressions
+scripts/       run_backtests.py, rehearse_live.py (the current-season rehearsal), make_report_page.py
+               (docs/report.html), docs/ (README results and REPORT renderers), package.sh
+tests/         52 tests: PBP rules, leakage, simulator invariants, props, scenarios, the live feed, review regressions
 Makefile, make.ps1   pipeline targets (make on Linux/macOS, PowerShell on Windows)
 docs/          REPORT.md, METHODOLOGY.md, DATA.md, FINDINGS_DATA.md (auto-generated), screenshots
 ```
@@ -189,7 +228,7 @@ docs/          REPORT.md, METHODOLOGY.md, DATA.md, FINDINGS_DATA.md (auto-genera
 
 | | |
 |---|---|
-| ![Slate](docs/screenshots/slate.png) **Slate**: every game on the as-of date with win probability, spread, total and the final score | ![Player](docs/screenshots/player.png) **Player detail & props**: distributions, any line (pushes on whole numbers), ladders with fair odds, double/triple-doubles, joint probabilities |
+| ![Slate](docs/screenshots/slate.png) **Slate**: every game on a date (upcoming ones projected pregame, with an injury report) with win probability, spread, total and the final score or tip-off time | ![Player](docs/screenshots/player.png) **Player detail & props**: distributions, any line (pushes on whole numbers), ladders with fair odds, double/triple-doubles, joint probabilities |
 | ![Scenario](docs/screenshots/scenario.png) **Scenario lab**: rule players out, change minutes, starters, availability or usage; compare with common random numbers | ![Compare](docs/screenshots/compare.png) **Player comparison**: per-36 production, recent form and overlaid projected distributions |
 | ![Validation](docs/screenshots/validation.png) **Validation**: the backtest tables and charts behind the results above, for the test or tuning seasons | ![Box score](docs/screenshots/game.png) **Projected box score** (also at the top): every player's projected line, with 80% ranges in a second tab; win probability, spread, total and overtime |
 
@@ -200,7 +239,7 @@ reconciliation against official box scores.
 
 * [docs/REPORT.md](docs/REPORT.md) - results and conclusions
 * [docs/METHODOLOGY.md](docs/METHODOLOGY.md) - every rule, model, parameter and what it was fitted on
-* [docs/DATA.md](docs/DATA.md) - sources, checksums, coverage, reconciliation, the live-data limitation
+* [docs/DATA.md](docs/DATA.md) - sources, checksums, coverage, reconciliation, the current-season feed
 * [docs/FINDINGS_DATA.md](docs/FINDINGS_DATA.md) - auto-generated tables behind most of the numbers above (the
   usage exponent and the usage-efficiency estimate are documented in REPORT and METHODOLOGY only)
 

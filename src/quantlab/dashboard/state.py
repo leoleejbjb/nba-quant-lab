@@ -8,17 +8,46 @@ from dataclasses import asdict
 import pandas as pd
 import streamlit as st
 
-from quantlab.config import PATHS
-from quantlab.live import Projector
+from quantlab.config import LIVE_SEASON, PATHS, TEST_SEASONS, TUNING_SEASON
+from quantlab.live import OVERRIDES_PATH, Projector
 from quantlab.sim.scenario import Scenario
 
-SEASONS = ("2023-24", "2024-25", "2025-26")   # seasons with walk-forward minutes projections
 PAGES: dict = {}                               # filled by app.py: name -> st.Page (for st.switch_page)
+_VERSION_FILES = [PATHS.processed("all") / "games.parquet", PATHS.processed("all") / "schedule.parquet",
+                  PATHS.features / "player_asof.parquet", PATHS.models / "player_rates.parquet",
+                  PATHS.models / "minutes_predictions.parquet", PATHS.models / "team_predictions.parquet",
+                  OVERRIDES_PATH]
 
 
-@st.cache_resource(show_spinner="Loading models and the 2020-26 database ...")
-def projector() -> Projector:
+def data_version() -> str:
+    """Changes whenever the pipeline / live-update rewrites the inputs or the injury report is edited: the cache key
+    of the loaded models and of every simulation."""
+    return "-".join(str(f.stat().st_mtime_ns) if f.exists() else "0" for f in _VERSION_FILES)
+
+
+@st.cache_resource(show_spinner="Loading models and the database ...", max_entries=1)
+def _projector(version: str) -> Projector:
     return Projector()
+
+
+def projector() -> Projector:
+    return _projector(data_version())
+
+
+def seasons(pr: Projector) -> list:
+    """Seasons with walk-forward minutes projections: the tuning and test seasons, then the seasons from the live
+    feed (the current one last) once they have data."""
+    have = set(pr._all_games()["season"])
+    out = [s for s in (TUNING_SEASON, *TEST_SEASONS) if s in have]
+    out += sorted(s for s in have if s > TEST_SEASONS[-1] and s not in out)
+    if LIVE_SEASON in have and LIVE_SEASON not in out:
+        out.append(LIVE_SEASON)
+    return out
+
+
+def live_status() -> dict | None:
+    p = PATHS.root / "live_status.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
@@ -40,9 +69,18 @@ def _scenario_key(sc: Scenario | None) -> str:
 
 
 @st.cache_data(show_spinner=False, max_entries=24, hash_funcs={Scenario: _scenario_key})
-def run_projection(game_id: int, n: int, environment: str, scenario: Scenario | None = None, seed: int = 7):
-    pr = projector()
+def _run_projection(game_id: int, n: int, environment: str, scenario: Scenario | None, seed: int, version: str):
+    pr = _projector(version)
     return pr.project(int(game_id), n=n, seed=seed, environment=environment, scenario=scenario)
+
+
+def run_projection(game_id: int, n: int, environment: str, scenario: Scenario | None = None, seed: int = 7):
+    return _run_projection(int(game_id), n, environment, scenario, seed, data_version())
+
+
+def reload_data() -> None:
+    st.cache_resource.clear()
+    st.cache_data.clear()
 
 
 def backtest_summary() -> dict | None:

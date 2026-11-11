@@ -268,9 +268,14 @@ corrected ones.
 
 ## Limitations
 
-* **No live 2026-27 data.** The pinned mirrors end with 2025-26 and the NBA's CDN refused this environment's requests;
-  the dashboard projects any date in 2023-24 .. 2025-26 as "upcoming" (from earlier games plus that game's starting
-  fives and who appeared) instead of tonight's slate.
+* **The current season is projected, not evaluated.** 2026-27 is fetched from the NBA's live CDN by
+  `quantlab live-update` (the CDN refused this build environment, so the fetch itself is untested here) and its
+  unplayed games are projected with pregame information only: projected starters, availability from missed-game
+  streaks (there is no injury feed; the user enters the injury report). Rehearsed on 2025-26 with the games from
+  2026-01-15 on hidden (53 games in the following week), minutes MAE was 5.15
+  against 4.10 for the backtest's projections of the same games, points 4.57
+  against 4.33 and PRA 5.97 against 5.49: the results
+  above are an optimistic bound for a real slate (METHODOLOGY section 11, `docs/pregame_rehearsal.json`).
 * **Availability comes from who appeared** for rotation players (the inactive list is not in the sources for the test
   seasons); measured on 2023-24, this flatters minutes by 0.066 MAE and closed-form EB points by
   0.011 (section 2).

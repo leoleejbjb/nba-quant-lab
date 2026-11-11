@@ -1,0 +1,156 @@
+{
+ "description": "Rehearsal of the live season on 2025-26 (scripts/rehearse_live.py all --cutoff 2026-01-15 --horizon 7 --sims 2000): games before the cutoff are final, the rest unplayed; every unplayed game in the 7-day horizon projected truly pregame (2,000 simulations each) and compared with what happened and with the backtested as-of projection of the same game (sim_blend, who appeared and who started known). MAE, bias and coverage are per player-game of players who appeared, conditional on playing.",
+ "season": "2025-26",
+ "cutoff": "2026-01-15",
+ "horizon_days": 7,
+ "sims_per_game": 2000,
+ "final_games_before_cutoff": 602,
+ "games": 53,
+ "player_games_played": 1152,
+ "roster_coverage": 0.9513888888888888,
+ "minutes_share_covered": 0.9623484372956714,
+ "common_player_games": 1096,
+ "mae": {
+  "min": {
+   "pregame": 5.1526257004674045,
+   "asof": 4.102123760305931
+  },
+  "pts": {
+   "pregame": 4.5747713438295365,
+   "asof": 4.328527732926564
+  },
+  "reb": {
+   "pregame": 1.893585012580116,
+   "asof": 1.7933603441025894
+  },
+  "ast": {
+   "pregame": 1.3724652802375314,
+   "asof": 1.3618050522512917
+  },
+  "fg3m": {
+   "pregame": 0.926110013273532,
+   "asof": 0.9150846283839787
+  },
+  "stl": {
+   "pregame": 0.7158577244569213,
+   "asof": 0.707966569938406
+  },
+  "blk": {
+   "pregame": 0.5216684125392665,
+   "asof": 0.5231649781761744
+  },
+  "tov": {
+   "pregame": 0.8942079867146584,
+   "asof": 0.882932453569322
+  },
+  "pra": {
+   "pregame": 5.973003245245553,
+   "asof": 5.488713330211314
+  }
+ },
+ "bias": {
+  "min": {
+   "pregame": 0.485532150097427,
+   "asof": 0.18810946184517424
+  },
+  "pts": {
+   "pregame": 0.2104366799972848,
+   "asof": 0.06257772207622515
+  },
+  "pra": {
+   "pregame": 0.37783997858238183,
+   "asof": 0.1519748400484581
+  }
+ },
+ "minutes_bias_by_actual_role": {
+  "starters": {
+   "pregame": 1.0338010451713582,
+   "asof": 0.4734149201945893,
+   "n": 516
+  },
+  "bench": {
+   "pregame": -0.0022381082786910745,
+   "asof": -0.0657140148932709,
+   "n": 580
+  }
+ },
+ "not_projected": {
+  "player_games": 56,
+  "presumed_out_after_streak": 22,
+  "not_in_pool": 34,
+  "minutes_share": 0.0376515627043285
+ },
+ "starters_correct_of_5": 4.0,
+ "rotation_projected_not_appearing": 0.15996503496503497,
+ "mean_p_play_rotation": 0.8536315559440559,
+ "team": {
+  "margin_rmse": {
+   "pregame": 14.9036620718179,
+   "asof": 14.78813295330952,
+   "team_model_day_before": 14.811399990869418
+  },
+  "total_rmse": {
+   "pregame": 18.53725528267587,
+   "asof": 18.61277346322107,
+   "team_model_day_before": 18.485744624209918
+  }
+ },
+ "by_days_ahead": [
+  {
+   "days_ahead": 0,
+   "n": 195,
+   "pts_mae_pregame": 4.684692562324927,
+   "pts_mae_asof": 4.354448894371808,
+   "min_mae_pregame": 5.212151208143967,
+   "min_mae_asof": 4.082184975982904
+  },
+  {
+   "days_ahead": 1,
+   "n": 115,
+   "pts_mae_pregame": 4.4058472275943315,
+   "pts_mae_asof": 4.486400132272078,
+   "min_mae_pregame": 4.232266456272291,
+   "min_mae_asof": 4.0955797032556225
+  },
+  {
+   "days_ahead": 2,
+   "n": 186,
+   "pts_mae_pregame": 5.175680214203816,
+   "pts_mae_asof": 5.053587039057466,
+   "min_mae_pregame": 5.428610167759721,
+   "min_mae_asof": 4.172605990986447
+  },
+  {
+   "days_ahead": 3,
+   "n": 130,
+   "pts_mae_pregame": 4.311354845552583,
+   "pts_mae_asof": 3.9713452211957962,
+   "min_mae_pregame": 5.480285989174476,
+   "min_mae_asof": 4.23884113619945
+  },
+  {
+   "days_ahead": 4,
+   "n": 187,
+   "pts_mae_pregame": 4.270940213249121,
+   "pts_mae_asof": 4.095474685250529,
+   "min_mae_pregame": 5.158934806680935,
+   "min_mae_asof": 4.130082367292933
+  },
+  {
+   "days_ahead": 5,
+   "n": 139,
+   "pts_mae_pregame": 4.408030209604252,
+   "pts_mae_asof": 4.11119810244602,
+   "min_mae_pregame": 4.638199780004488,
+   "min_mae_asof": 3.86557228654721
+  },
+  {
+   "days_ahead": 6,
+   "n": 144,
+   "pts_mae_pregame": 4.577966966903757,
+   "pts_mae_asof": 4.065697744942611,
+   "min_mae_pregame": 5.643113830464857,
+   "min_mae_asof": 4.111915920562419
+  }
+ ]
+}
