@@ -85,10 +85,12 @@ function Get-PythonInfo([string]$Exe, [string[]]$Prefix) {
     $eap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        $out = & $Exe @Prefix -c "import sys, sysconfig; print('%d.%d %s' % (sys.version_info[0], sys.version_info[1], sysconfig.get_platform()))" 2>$null
+        # no % or other cmd.exe metacharacters: batch-file shims (pyenv-win) would mangle them
+        $out = & $Exe @Prefix -c "import sys, sysconfig; print(sys.version_info[0], sys.version_info[1], sysconfig.get_platform())" 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
         $parts = "$out".Trim() -split "\s+"
-        return @{ Version = [version]$parts[0]; Platform = $parts[1] }
+        if ($parts.Count -lt 3) { return $null }
+        return @{ Version = [version]"$($parts[0]).$($parts[1])"; Platform = $parts[2] }
     } catch {
         return $null
     } finally {
@@ -128,7 +130,7 @@ function Find-BasePython([string]$Requested) {
             Write-Warning "Skipping $label ($($info.Platform)): the dependencies need the 64-bit (x64) Python from python.org."
             continue
         }
-        return , (@($exe) + $prefix)
+        return , (@($exe, "$($info.Version)") + $prefix)
     }
     throw ("No suitable Python found. Install Python 3.13 (Windows installer, 64-bit) from https://www.python.org/downloads/ " +
            "(tick 'Add python.exe to PATH'), or pass one:  .\make.ps1 install C:\path\to\python.exe")
@@ -165,8 +167,20 @@ function Invoke-Target([string]$Name) {
             Test-VcRuntime
             $base = Find-BasePython ($Rest | Select-Object -First 1)
             $exe = $base[0]
-            $prefix = @($base | Select-Object -Skip 1)
-            Invoke-Native $exe ($prefix + @("-m", "venv", ".venv"))
+            $version = $base[1]
+            $prefix = @($base | Select-Object -Skip 2)
+            # a .venv built by another Python version keeps its old compiled packages: rebuild it from scratch
+            $venvArgs = @("-m", "venv", ".venv")
+            $cfg = Join-Path $Root ".venv\pyvenv.cfg"
+            if (Test-Path -LiteralPath $cfg) {
+                $line = Get-Content -LiteralPath $cfg | Where-Object { $_ -match "^\s*version(_info)?\s*=" } | Select-Object -First 1
+                $old = if ($line -match "=\s*(\d+)\.(\d+)") { "$($Matches[1]).$($Matches[2])" } else { "" }
+                if ($old -ne $version) {
+                    Write-Host "Existing .venv was made with Python $(if ($old) { $old } else { 'unknown' }); recreating it for Python $version." -ForegroundColor Yellow
+                    $venvArgs = @("-m", "venv", "--clear", ".venv")
+                }
+            }
+            Invoke-Native $exe ($prefix + $venvArgs)
             $py = Get-VenvPython
             Invoke-Native $py @("-m", "pip", "install", "--upgrade", "pip")
             Invoke-Native $py @("-m", "pip", "install", "-e", ".[dev]")

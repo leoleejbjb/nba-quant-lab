@@ -32,7 +32,9 @@ def connect() -> duckdb.DuckDBPyConnection:
         files = [f for f in files if f.parent.name != "all"]
         if files:
             lst = ", ".join(_sql_path(f) for f in files)
-            con.execute(f"CREATE VIEW {name} AS SELECT *, regexp_extract(filename, '(\\d{{4}}-\\d{{2}})', 1) AS season "
+            # the season is the file's folder name (anchored: other parts of the path may look like seasons too)
+            con.execute(f"CREATE VIEW {name} AS SELECT *, "
+                        f"regexp_extract(filename, '(\\d{{4}}-\\d{{2}})[/\\\\][^/\\\\]+$', 1) AS season "
                         f"FROM read_parquet([{lst}], filename = true, union_by_name = true)")
     return con
 
