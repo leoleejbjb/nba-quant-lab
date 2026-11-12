@@ -34,6 +34,33 @@ PINNED = ("2020-21", "2021-22", "2022-23", "2023-24", "2024-25")
 PARAMS = ("rate_params.json", "team_factor_params.json", "sim_constants.json", "integration.json")
 
 
+def _link(src: Path, dst: Path) -> None:
+    """Link a pinned file or season folder into the rehearsal folder (read-only use). Windows without the symlink
+    privilege (no Developer Mode): a hard link for a file, a directory junction for a folder."""
+    try:
+        dst.symlink_to(src, target_is_directory=src.is_dir())
+    except OSError:
+        if os.name != "nt":
+            raise
+        if src.is_dir():
+            import _winapi
+            _winapi.CreateJunction(str(src), str(dst))
+        else:
+            os.link(src, dst)
+
+
+def _check_folder(folder: Path) -> Path:
+    """The rehearsal's data folder - never the project's own data, and an existing one only if a rehearsal made it."""
+    data = (folder / "data").resolve()
+    main = MAIN.resolve()
+    if data == main or main in data.parents or data in main.parents:
+        raise SystemExit(f"--dir {folder}: the rehearsal needs a folder of its own, not the project's data ({main})")
+    if data.exists() and any(data.iterdir()) and not (folder / "rehearsal.json").exists():
+        raise SystemExit(f"--dir {folder}: {data} exists and was not made by a rehearsal (no rehearsal.json); "
+                         "choose a new or empty folder")
+    return data
+
+
 def env_for(folder: Path, horizon: int) -> dict:
     env = dict(os.environ, QUANTLAB_DATA_DIR=str(folder / "data"), QUANTLAB_LIVE_SEASON=SEASON,
                QUANTLAB_UPCOMING_DAYS=str(horizon), PYTHONUTF8="1")
@@ -42,17 +69,17 @@ def env_for(folder: Path, horizon: int) -> dict:
 
 def prepare(folder: Path, cutoff: pd.Timestamp) -> None:
     sys.path.insert(0, str(ROOT / "src"))
-    data = folder / "data"
+    data = _check_folder(folder)
     if data.exists():
         shutil.rmtree(data)
     (data / "raw").mkdir(parents=True)
     for f in (MAIN / "raw").iterdir():                 # pinned files, linked (read-only use)
         if f.is_file():
-            (data / "raw" / f.name).symlink_to(f)
+            _link(f, data / "raw" / f.name)
     for s in PINNED:
         for sub in ("processed", "staged"):
             (data / sub).mkdir(exist_ok=True)
-            (data / sub / s).symlink_to(MAIN / sub / s, target_is_directory=True)
+            _link(MAIN / sub / s, data / sub / s)
     (data / "models").mkdir()
     for f in PARAMS:
         if (MAIN / "models" / f).exists():
@@ -84,7 +111,7 @@ def update(folder: Path, horizon: int) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("step", choices=["prepare", "update", "evaluate", "all"])
-    ap.add_argument("--dir", required=True, type=Path)
+    ap.add_argument("--dir", required=True, type=Path, help="a new folder (it gets a data/ of its own; never the project's data folder)")
     ap.add_argument("--cutoff", default="2026-01-15")
     ap.add_argument("--horizon", type=int, default=7)
     ap.add_argument("--sims", type=int, default=2000)

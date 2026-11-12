@@ -1,5 +1,5 @@
 {
- "description": "Rehearsal of the live season on 2025-26 (scripts/rehearse_live.py all --cutoff 2026-01-15 --horizon 7 --sims 2000): games before the cutoff are final, the rest unplayed; every unplayed game in the 7-day horizon projected truly pregame (2,000 simulations each) and compared with what happened and with the backtested as-of projection of the same game (sim_blend, who appeared and who started known). MAE, bias and coverage are per player-game of players who appeared, conditional on playing.",
+ "description": "Rehearsal of the live season on 2025-26 (scripts/rehearse_live.py all --cutoff 2026-01-15 --horizon 7 --sims 2000): games before the cutoff are final, the rest unplayed; every unplayed game in the 7-day horizon projected truly pregame (2,000 simulations each) and compared with what happened and with the backtested as-of projection of the same game (sim_blend, who appeared and who started known). 'mae', 'bias' and the role splits are per player-game of the players who appeared and were projected by both (common_player_games), conditional on playing; 'mae_pregame_all_appearances' counts every appearance, a player the pregame projection left out as projected 0.",
  "season": "2025-26",
  "cutoff": "2026-01-15",
  "horizon_days": 7,
@@ -12,85 +12,96 @@
  "common_player_games": 1096,
  "mae": {
   "min": {
-   "pregame": 5.1526257004674045,
+   "pregame": 4.920939109151382,
    "asof": 4.102123760305931
   },
   "pts": {
-   "pregame": 4.5747713438295365,
+   "pregame": 4.560130160233943,
    "asof": 4.328527732926564
   },
   "reb": {
-   "pregame": 1.893585012580116,
+   "pregame": 1.8702493248632726,
    "asof": 1.7933603441025894
   },
   "ast": {
-   "pregame": 1.3724652802375314,
+   "pregame": 1.372799457577031,
    "asof": 1.3618050522512917
   },
   "fg3m": {
-   "pregame": 0.926110013273532,
+   "pregame": 0.9250150168254268,
    "asof": 0.9150846283839787
   },
   "stl": {
-   "pregame": 0.7158577244569213,
+   "pregame": 0.7159122127178773,
    "asof": 0.707966569938406
   },
   "blk": {
-   "pregame": 0.5216684125392665,
+   "pregame": 0.5217169015083215,
    "asof": 0.5231649781761744
   },
   "tov": {
-   "pregame": 0.8942079867146584,
+   "pregame": 0.8908824020810593,
    "asof": 0.882932453569322
   },
   "pra": {
-   "pregame": 5.973003245245553,
+   "pregame": 5.933533268453788,
    "asof": 5.488713330211314
   }
  },
+ "mae_pregame_all_appearances": {
+  "min": 5.514832983475041,
+  "pts": 4.757727999667015,
+  "reb": 1.9581538715713078,
+  "ast": 1.3972119839448143,
+  "fg3m": 0.918243453507524,
+  "stl": 0.7080206468218695,
+  "blk": 0.5145848299072224,
+  "tov": 0.9005270075354522,
+  "pra": 6.334333734570617
+ },
  "bias": {
   "min": {
-   "pregame": 0.485532150097427,
+   "pregame": 0.35964727237566835,
    "asof": 0.18810946184517424
   },
   "pts": {
-   "pregame": 0.2104366799972848,
+   "pregame": 0.15697341330685005,
    "asof": 0.06257772207622515
   },
   "pra": {
-   "pregame": 0.37783997858238183,
+   "pregame": 0.28580375620595183,
    "asof": 0.1519748400484581
   }
  },
  "minutes_bias_by_actual_role": {
   "starters": {
-   "pregame": 1.0338010451713582,
+   "pregame": 0.41891457740034543,
    "asof": 0.4734149201945893,
    "n": 516
   },
   "bench": {
-   "pregame": -0.0022381082786910745,
+   "pregame": 0.3069198079054383,
    "asof": -0.0657140148932709,
    "n": 580
   }
  },
  "not_projected": {
   "player_games": 56,
-  "presumed_out_after_streak": 22,
-  "not_in_pool": 34,
+  "presumed_out_after_streak": 25,
+  "not_in_pool": 31,
   "minutes_share": 0.0376515627043285
  },
  "starters_correct_of_5": 4.0,
  "rotation_projected_not_appearing": 0.15996503496503497,
- "mean_p_play_rotation": 0.8536315559440559,
+ "mean_p_play_rotation": 0.8540511363636364,
  "team": {
   "margin_rmse": {
-   "pregame": 14.9036620718179,
+   "pregame": 14.766837943002749,
    "asof": 14.78813295330952,
    "team_model_day_before": 14.811399990869418
   },
   "total_rmse": {
-   "pregame": 18.53725528267587,
+   "pregame": 18.496743762512303,
    "asof": 18.61277346322107,
    "team_model_day_before": 18.485744624209918
   }
@@ -99,57 +110,57 @@
   {
    "days_ahead": 0,
    "n": 195,
-   "pts_mae_pregame": 4.684692562324927,
+   "pts_mae_pregame": 4.623290842904102,
    "pts_mae_asof": 4.354448894371808,
-   "min_mae_pregame": 5.212151208143967,
+   "min_mae_pregame": 4.985708069499742,
    "min_mae_asof": 4.082184975982904
   },
   {
    "days_ahead": 1,
    "n": 115,
-   "pts_mae_pregame": 4.4058472275943315,
+   "pts_mae_pregame": 4.4505521722122525,
    "pts_mae_asof": 4.486400132272078,
-   "min_mae_pregame": 4.232266456272291,
+   "min_mae_pregame": 4.407245532547218,
    "min_mae_asof": 4.0955797032556225
   },
   {
    "days_ahead": 2,
    "n": 186,
-   "pts_mae_pregame": 5.175680214203816,
+   "pts_mae_pregame": 5.142445718129242,
    "pts_mae_asof": 5.053587039057466,
-   "min_mae_pregame": 5.428610167759721,
+   "min_mae_pregame": 5.216392774650273,
    "min_mae_asof": 4.172605990986447
   },
   {
    "days_ahead": 3,
    "n": 130,
-   "pts_mae_pregame": 4.311354845552583,
+   "pts_mae_pregame": 4.289289732930902,
    "pts_mae_asof": 3.9713452211957962,
-   "min_mae_pregame": 5.480285989174476,
+   "min_mae_pregame": 5.299369411908663,
    "min_mae_asof": 4.23884113619945
   },
   {
    "days_ahead": 4,
    "n": 187,
-   "pts_mae_pregame": 4.270940213249121,
+   "pts_mae_pregame": 4.313949164940529,
    "pts_mae_asof": 4.095474685250529,
-   "min_mae_pregame": 5.158934806680935,
+   "min_mae_pregame": 4.795141989526052,
    "min_mae_asof": 4.130082367292933
   },
   {
    "days_ahead": 5,
    "n": 139,
-   "pts_mae_pregame": 4.408030209604252,
+   "pts_mae_pregame": 4.3723270177776,
    "pts_mae_asof": 4.11119810244602,
-   "min_mae_pregame": 4.638199780004488,
+   "min_mae_pregame": 4.3692518904340645,
    "min_mae_asof": 3.86557228654721
   },
   {
    "days_ahead": 6,
    "n": 144,
-   "pts_mae_pregame": 4.577966966903757,
+   "pts_mae_pregame": 4.555436967206047,
    "pts_mae_asof": 4.065697744942611,
-   "min_mae_pregame": 5.643113830464857,
+   "min_mae_pregame": 5.216099370762154,
    "min_mae_asof": 4.111915920562419
   }
  ]

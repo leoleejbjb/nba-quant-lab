@@ -14,9 +14,12 @@ from quantlab.sim.scenario import Scenario
 
 PAGES: dict = {}                               # filled by app.py: name -> st.Page (for st.switch_page)
 _VERSION_FILES = [PATHS.processed("all") / "games.parquet", PATHS.processed("all") / "schedule.parquet",
-                  PATHS.features / "player_asof.parquet", PATHS.models / "player_rates.parquet",
-                  PATHS.models / "minutes_predictions.parquet", PATHS.models / "team_predictions.parquet",
-                  OVERRIDES_PATH]
+                  PATHS.processed("all") / "player_games.parquet", PATHS.features / "player_asof.parquet",
+                  PATHS.features / "team_context.parquet", PATHS.features / "fringe_pool.parquet",
+                  PATHS.models / "player_rates.parquet", PATHS.models / "minutes_predictions.parquet",
+                  PATHS.models / "minutes_features.parquet", PATHS.models / "team_predictions.parquet",
+                  PATHS.models / "team_factors.parquet", PATHS.models / "integration.json",
+                  PATHS.root / "live_status.json", OVERRIDES_PATH]      # live_status.json: written last by live-update
 
 
 def data_version() -> str:
@@ -50,13 +53,21 @@ def live_status() -> dict | None:
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
-@st.cache_data(show_spinner=False, max_entries=64)
-def players_table() -> pd.DataFrame:
+@st.cache_data(show_spinner=False, max_entries=4)
+def _players_table(version: str) -> pd.DataFrame:
     return pd.read_parquet(PATHS.processed("all") / "players.parquet")
 
 
-@st.cache_data(show_spinner=False, max_entries=8)
+def players_table() -> pd.DataFrame:
+    return _players_table(data_version())
+
+
 def game_logs(season: str) -> pd.DataFrame:
+    return _game_logs(season, data_version())
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _game_logs(season: str, version: str) -> pd.DataFrame:
     cols = ["game_id", "game_date", "person_id", "name", "team", "opp", "is_home", "starter", "min", "pts", "reb",
             "ast", "fg3m", "fga", "fgm", "fta", "ftm", "stl", "blk", "tov", "pf", "plus_minus", "usg_pct", "ts_pct",
             "played", "season"]

@@ -112,3 +112,21 @@ def test_blowouts_reduce_starter_minutes(game, constants):
     close = np.abs(margin) <= 5
     assert big.sum() > 50 and close.sum() > 50
     assert star_min[big].mean() < star_min[close].mean() - 2.0
+
+
+def test_a_sitting_questionable_player_gives_the_deep_bench_a_share(game, constants):
+    """A rotation player with p_play < 1 who sits leaves part of his minutes to fringe players (fringe_take); with
+    every rotation player certain to play, fringe_take changes nothing - not even the random numbers."""
+    _, a = run(game, constants, n=1500, seed=4, fringe_take=0.0)
+    _, b = run(game, constants, n=1500, seed=4, fringe_take=0.25)
+    assert (a.stats == b.stats).all() and (a.secs == b.secs).all()
+    g = copy.deepcopy(game)
+    g.home.players[1].p_play = 0.5                         # a questionable 34-minute player
+    fringe = [i for i, p in enumerate(g.home.players) if not p.rotation]
+    out = {}
+    for take in (0.0, 0.25):
+        _, r = run(g, constants, n=4000, seed=4, fringe_take=take)
+        sat = r.secs[:, 0, 1] == 0
+        out[take] = (r.secs[:, 0, fringe].sum(axis=1)[sat].mean() / 60, r.secs[:, 0, fringe].sum(axis=1)[~sat].mean() / 60)
+    assert out[0.25][0] > out[0.0][0] + 2.0                # more deep-bench minutes on the nights he sits ...
+    assert abs(out[0.25][1] - out[0.0][1]) < 0.5           # ... and the same on the nights he plays

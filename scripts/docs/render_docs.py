@@ -134,7 +134,7 @@ pts_crps_txt = ", ".join(f"{MODEL[m]} {crps_pts[m]:.3f}" for m in crps_order)
 # ---------------------------------------------------------------- README results block
 # ---------------------------------------------------------------- current-season rehearsal (scripts/rehearse_live.py)
 RH = json.loads((ROOT / "docs" / "pregame_rehearsal.json").read_text(encoding="utf-8"))
-RM = RH["mae"]
+RM, RA = RH["mae"], RH["mae_pregame_all_appearances"]
 
 
 def rh_gap(stat):
@@ -212,11 +212,14 @@ seasons and is measured instead (item 2), and overtime frequency, fixed only par
 the starting five is projected (the team's last one), availability comes from missed-game streaks (there is no injury
 feed; the injury report can be entered in the dashboard) and minutes from the lineup-blind model. Rehearsed on
 {RH['season']} through the live feed's format and the real update pipeline, with every game from {RH['cutoff']} on
-hidden, the {RH['games']} games of the following {RH['horizon_days']} days ({RH['player_games_played']:,} player-games)
-had minutes MAE {RM['min']['pregame']:.2f} against {RM['min']['asof']:.2f} for the backtest's projections of the same
-games, which know who appeared and who started ({rh_gap('min')}), points {RM['pts']['pregame']:.2f} against
-{RM['pts']['asof']:.2f} ({rh_gap('pts')}) and PRA {RM['pra']['pregame']:.2f} against {RM['pra']['asof']:.2f}
-({rh_gap('pra')}); {RH['starters_correct_of_5']:.1f} of 5 projected starters started and
+hidden, the {RH['games']} games of the following {RH['horizon_days']} days had minutes MAE {RM['min']['pregame']:.2f}
+against {RM['min']['asof']:.2f} for the backtest's projections of the same games, which know who appeared and who
+started ({rh_gap('min')}), points {RM['pts']['pregame']:.2f} against {RM['pts']['asof']:.2f} ({rh_gap('pts')}) and PRA
+{RM['pra']['pregame']:.2f} against {RM['pra']['asof']:.2f} ({rh_gap('pra')}), on the {RH['common_player_games']:,} of the
+{RH['player_games_played']:,} player-games both projected. The other {RH['not_projected']['player_games']} appearances
+({pct(RH['not_projected']['minutes_share'])} of the minutes) were by players the pregame projection left out -
+presumed out after missing three games, or not in the team's 25-day pool; counted as projected 0 they raise its MAE to
+{RA['min']:.2f} minutes and {RA['pts']:.2f} points. {RH['starters_correct_of_5']:.1f} of 5 projected starters started and
 {pct(RH['rotation_projected_not_appearing'], '.0f')} of the projected rotation players did not play. Spread and total
 RMSE were within {rh_team_gap:.2f} points of the backtest simulation's and the team model's ({RH['games']} games
 are too few to tell them apart). The

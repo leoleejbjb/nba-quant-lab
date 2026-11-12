@@ -14,6 +14,8 @@ def result_label(g) -> str:
     if bool(getattr(g, "is_final", True)) and pd.notna(getattr(g, "home_pts", np.nan)):
         return f"{g.away_team} {int(g.away_pts)} - {int(g.home_pts)} {g.home_team}"
     status = str(getattr(g, "status", "") or "")
+    if status == "final":
+        return "Final (box score not built yet)"   # final in the schedule, play-by-play not fetched or incomplete
     if status == "live":
         return "In progress"
     if status == "postponed":
@@ -27,6 +29,9 @@ def result_label(g) -> str:
 
 def injury_report(pr, sl: pd.DataFrame) -> None:
     """The user's injury report for unplayed games (all of them, not just this date)."""
+    ov = pr.overrides
+    if ov.get("error"):
+        st.warning(ov["error"])
     gids = [int(g) for g in sl.loc[~sl["is_final"] & sl["projectable"], "game_id"]]
     rows = pd.concat([pr.store.by_game[g] for g in gids if g in pr.store.by_game]) if gids else pd.DataFrame()
     if rows.empty:
@@ -37,21 +42,35 @@ def injury_report(pr, sl: pd.DataFrame) -> None:
     rows = rows.drop_duplicates("person_id")
     label = {int(p): f"{pr.store.names.get(int(p), p)} ({tri.get(int(t), '')})"
              for p, t in zip(rows["person_id"], rows["team_id"])}
-    ov = pr.overrides
-    opts = sorted(set(label) | set(ov["out"]) | set(ov["available"]), key=lambda x: label.get(x, str(x)))
-    with st.expander("Injury report for unplayed games"):
-        st.caption("There is no injury feed: a player who missed his team's last three games or more is presumed out, "
-                   "other rotation players play with the appearance rate of their missed-game streak (about 90% after "
-                   "playing the previous game). Mark the official injury report here; it applies to every unplayed "
-                   "game and re-projects teammates' minutes.")
+    # players of these teams outside the 25-day pool (long absences): they can only be marked available
+    away = {pid: f"{pr.store.names.get(pid, pid)} ({tri.get(tid, '')}, last played {d:%b %d, %Y})"
+            for pid, tid, d in pr.store.recent_absentees(tri, pd.Timestamp(sl["game_date"].min()), exclude=label)}
+    names = {**away, **label}
+    team_tri = {**dict(zip(pr.store.games["home_team_id"], pr.store.games["home_team"])),
+                **dict(zip(pr.store.games["away_team_id"], pr.store.games["away_team"]))}
+    for pid in set(ov["out"]) | set(ov["available"]):  # saved players whose team does not play on this date
+        if pid not in names:
+            tid = ov.get("teams", {}).get(pid) or pr.store.last_team_before(pid, pd.Timestamp(sl["game_date"].min()))
+            names[pid] = f"{pr.store.names.get(pid, pid)} ({team_tri.get(tid, '?')})"
+    ov_ids = set(ov["out"]) | set(ov["available"])
+    out_opts = sorted(set(label) | set(ov["out"]), key=lambda x: names.get(x, str(x)))
+    av_opts = sorted(set(label) | set(away) | set(ov["available"]), key=lambda x: names.get(x, str(x)))
+    with st.expander("Injury report for unplayed games", expanded=bool(ov_ids)):
+        st.caption("There is no injury feed: a rotation player who missed his team's last three games or more is "
+                   "presumed out, other rotation players play with the appearance rate of their missed-game streak "
+                   "(about 90% after playing the previous game), deep-bench players with their share of the team's "
+                   "recent games. Mark the official injury report here; it applies to every unplayed "
+                   "game and re-projects teammates' minutes. Players back from a long absence are listed under "
+                   "Available with the date they last played.")
         c1, c2 = st.columns(2)
-        out = c1.multiselect("Out", opts, default=[x for x in ov["out"] if x in opts],
-                             format_func=lambda x: label.get(x, str(x)), key="ir_out")
-        avail = c2.multiselect("Available (back from a presumed absence)", opts,
-                               default=[x for x in ov["available"] if x in opts],
-                               format_func=lambda x: label.get(x, str(x)), key="ir_avail")
+        out = c1.multiselect("Out", out_opts, default=[x for x in ov["out"] if x in out_opts],
+                             format_func=lambda x: names.get(x, str(x)), key="ir_out")
+        avail = c2.multiselect("Available (back from a presumed or long absence)", av_opts,
+                               default=[x for x in ov["available"] if x in av_opts],
+                               format_func=lambda x: names.get(x, str(x)), key="ir_avail")
         if st.button("Save injury report", type="primary"):
-            pr.set_overrides({"out": out, "available": avail, "p_play": ov.get("p_play", {})})
+            pr.set_overrides({"out": out, "available": avail, "p_play": ov.get("p_play", {}),
+                              "starters": ov.get("starters", {}), "teams": ov.get("teams", {})})
             state.reload_data()
             st.rerun()
 
@@ -96,7 +115,7 @@ def render() -> None:
             except Exception as e:                     # one game's missing inputs must not break the slate
                 row["Proj. score"] = f"projection unavailable ({type(e).__name__})"
         else:
-            row["Proj. score"] = "projection available closer to the date"
+            row["Proj. score"] = "not projected: " + pr.why_not_projectable(int(g.game_id)).split(" (")[0]
         rows.append(row)
         prog.progress((k + 1) / len(sl), text=f"Simulated {k + 1}/{len(sl)} games")
     prog.empty()

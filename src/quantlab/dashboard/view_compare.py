@@ -57,11 +57,12 @@ def render() -> None:
     # first game featuring one of their teams
     pr = state.projector()
     sl = pr.slate(st.session_state["asof_date"])
+    sl = sl[sl["projectable"]]
     teams = set(a["team"])
     gid = state.selected_game()
     involved = sl[sl["home_team"].isin(teams) | sl["away_team"].isin(teams)]
     if gid is None or gid not in set(involved["game_id"]):
-        gid = int(involved["game_id"].iloc[0]) if len(involved) else gid
+        gid = int(involved["game_id"].iloc[0]) if len(involved) else None
     if gid is None:
         st.caption("Open a game on the Slate page to compare projected distributions.")
         return

@@ -26,8 +26,8 @@ F_TOV, F_3SH, F_FG2, F_FG3, F_TRIP, F_OREB, F_AST = range(7)
  P_LG_BLK, P_LG_AST, P_SHIFT_H, P_SHIFT_A, P_CORE, P_FOUL1, P_FOUL2, P_FOUL3, P_FOUL4, P_LG_FG2, P_LG_FG3,
  P_FRINGE_PEN, P_SCORE_EFF, P_TRIP_MULT, P_STL_MULT, P_BLK_MULT, P_FG2_OFF, P_FG3_OFF, P_OWN_EFF, P_RE_RHO,
  P_PPP_REF_H, P_PPP_REF_A, P_FRINGE_SD, P_HOLD_TIED, P_HOLD_DOWN, P_HOLD_U, P_QUICK_DUR, P_HEAVE2, P_HEAVE3,
- P_LATE3_OFF, P_HEAVE_T, P_AVOID4, P_AVOID5, P_TOV_MULT, P_OREB_MULT) = range(56)
-N_PARAMS = 56
+ P_LATE3_OFF, P_HEAVE_T, P_AVOID4, P_AVOID5, P_TOV_MULT, P_OREB_MULT, P_FRINGE_TAKE) = range(57)
+N_PARAMS = 57
 # end-of-game lead groups (offense perspective): 0 leading, 1 tied, 2 down 1-3, 3 down 4+
 
 
@@ -92,8 +92,24 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
     target = np.zeros((2, P))
     for t in range(2):
         tot = 0.0
+        # a questionable rotation player (p_play < 1: unplayed games, scenarios) who sits leaves minutes that teams
+        # give partly to the deep bench: fringe participation rises so that a share P_FRINGE_TAKE of his planned
+        # minutes goes to fringe players (rotation players are listed first; nothing changes when nobody sits)
+        room = 0.0
         for i in range(P):
-            if exists[t, i] and np.random.random() < p_play[t, i]:
+            if exists[t, i] and not rotation[t, i]:
+                room += (1.0 - p_play[t, i]) * plan[t, i]
+        vac = 0.0
+        for i in range(P):
+            if not exists[t, i]:
+                continue
+            p = p_play[t, i]
+            if vac > 0.0 and room > 0.0 and not rotation[t, i]:
+                p += (1.0 - p) * min(prm[P_FRINGE_TAKE] * vac / room, 1.0)
+            if np.random.random() >= p:
+                if rotation[t, i] and p_play[t, i] > 0.0:
+                    vac += plan[t, i]
+            else:
                 played[t, i] = True
                 if rotation[t, i]:
                     v = plan[t, i] + min_sd[t, i] * np.random.standard_normal()

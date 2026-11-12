@@ -42,14 +42,15 @@ def availability_status(comment: pd.Series, box_seconds: pd.Series) -> pd.Series
     return pd.Series(out, index=comment.index)
 
 
-def build_schedule_tables(seasons, out_dir) -> int:
-    """all/schedule.parquet and all/team_schedule.parquet from the per-season schedules (live season only)."""
+def build_schedule_tables(seasons, out_dir) -> tuple[int, pd.DataFrame | None]:
+    """all/schedule.parquet and all/team_schedule.parquet from the per-season schedules (seasons built from the
+    live feed). Returns the number of scheduled games and the team schedule."""
     paths = [PATHS.processed(s) / "schedule.parquet" for s in seasons]
     scheds = [pd.read_parquet(p) for p in paths if p.exists()]
     if not scheds:
         for name in ("schedule", "team_schedule"):
             (out_dir / f"{name}.parquet").unlink(missing_ok=True)
-        return 0
+        return 0, None
     sc = pd.concat(scheds, ignore_index=True)
     sc["game_date"] = pd.to_datetime(sc["game_date"])
     known = sc[(sc["home_team_id"] > 0) & (sc["away_team_id"] > 0) & ~sc["status"].isin(["tbd", "postponed"])]
@@ -60,9 +61,10 @@ def build_schedule_tables(seasons, out_dir) -> int:
     prev = ts.groupby(["team_id", "season"])["game_date"].shift(1)
     ts["rest_days"] = (ts["game_date"] - prev).dt.days.fillna(7).clip(upper=7)   # the rule used for team_games
     ts["b2b"] = ts["rest_days"] == 1
+    ts = ts[SCHEDULE_TEAM_COLS].reset_index(drop=True)
     _write(sc, out_dir / "schedule.parquet")
-    _write(ts[SCHEDULE_TEAM_COLS].reset_index(drop=True), out_dir / "team_schedule.parquet")
-    return int(len(sc))
+    _write(ts, out_dir / "team_schedule.parquet")
+    return int(len(sc)), ts
 
 
 def upcoming_team_games(horizon_days: int = UPCOMING_DAYS) -> pd.DataFrame:
@@ -146,6 +148,16 @@ def build_database(seasons=None, log=print) -> dict:
     prev = tg.groupby(["team_id", "season"])["game_date"].shift(1)
     tg["rest_days"] = (tg["game_date"] - prev).dt.days.fillna(7).clip(upper=7)
     tg["b2b"] = tg["rest_days"] == 1
+    # seasons from the live feed: rest from the full schedule (the live season's schedule is read even before its
+    # first game is built), so a finished game whose play-by-play is missing still counts
+    n_sched, ts = build_schedule_tables(tuple(dict.fromkeys((*seasons, LIVE_SEASON))), out_dir)
+    if ts is not None and len(ts):
+        rs = ts[["game_id", "team_id", "rest_days", "b2b"]].rename(columns={"rest_days": "_rest", "b2b": "_b2b"})
+        tg = tg.merge(rs, on=["game_id", "team_id"], how="left")
+        has = tg["_rest"].notna()
+        tg.loc[has, "rest_days"] = tg.loc[has, "_rest"]
+        tg.loc[has, "b2b"] = tg.loc[has, "_b2b"].astype(bool)
+        tg = tg.drop(columns=["_rest", "_b2b"])
     tg["margin"] = tg["pts"] - tg["opp_pts"]
     tg["total"] = tg["pts"] + tg["opp_pts"]
     tg["win"] = tg["margin"] > 0
@@ -171,7 +183,6 @@ def build_database(seasons=None, log=print) -> dict:
     for name, df in [("player_games", pg), ("team_games", tg), ("games", games), ("availability", av),
                      ("players", players)]:
         _write(df, out_dir / f"{name}.parquet")
-    n_sched = build_schedule_tables(seasons, out_dir)
     summary = {"player_games": int(len(pg)), "played": int(pg["played"].sum()), "games": int(len(games)),
                "players": int(len(players)), "seasons": list(seasons),
                "availability_rows": int(len(av)), "staff_rows_dropped": n_staff, "scheduled_games": n_sched,

@@ -20,10 +20,11 @@ STATS = ("min", "pts", "reb", "ast", "fg3m", "stl", "blk", "tov", "pra")
 
 
 def project_all(n_sims: int, log=print) -> tuple[pd.DataFrame, pd.DataFrame]:
-    from ..live import Projector
+    from ..live import NO_REPORT, Projector
     pr = Projector()
+    pr.overrides = dict(NO_REPORT)      # nothing a user saved in the folder (it may know what happened)
     sc = pr.store.schedule
-    gids = [int(g) for g in sc.index if not pr.store.is_final(g) and g in pr.store.by_game]
+    gids = [int(g) for g in sc.index if not pr.store.is_final(g) and pr.store.pregame_problem(g) is None]
     cutoff = pr.store.games["game_date"].max()
     players, teams = [], []
     for k, gid in enumerate(sorted(gids)):
@@ -73,6 +74,8 @@ def score(players: pd.DataFrame, teams: pd.DataFrame, main: Path, season: str) -
     out["mae"] = {s: {"pregame": float((common[f"pre_{s}"] - common[s]).abs().mean()),
                       "asof": float((common[f"asof_{s}"] - common[s]).abs().mean())}
                   for s in STATS if f"asof_{s}" in common}
+    # every appearance, a player the pregame projection left out counting as projected 0
+    out["mae_pregame_all_appearances"] = {s: float((j[f"pre_{s}"].fillna(0) - j[s]).abs().mean()) for s in STATS}
     out["bias"] = {s: {"pregame": float((common[f"pre_{s}"] - common[s]).mean()),
                        "asof": float((common[f"asof_{s}"] - common[s]).mean())} for s in ("min", "pts", "pra")}
     out["minutes_bias_by_actual_role"] = {

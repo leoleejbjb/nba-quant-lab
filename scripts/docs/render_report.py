@@ -522,8 +522,10 @@ limitations = f"""
   streaks (there is no injury feed; the user enters the injury report). Rehearsed on 2025-26 with the games from
   {RH['cutoff']} on hidden ({RH['games']} games in the following week), minutes MAE was {RM['min']['pregame']:.2f}
   against {RM['min']['asof']:.2f} for the backtest's projections of the same games, points {RM['pts']['pregame']:.2f}
-  against {RM['pts']['asof']:.2f} and PRA {RM['pra']['pregame']:.2f} against {RM['pra']['asof']:.2f}: the results
-  above are an optimistic bound for a real slate (METHODOLOGY section 11, `docs/pregame_rehearsal.json`).
+  against {RM['pts']['asof']:.2f} and PRA {RM['pra']['pregame']:.2f} against {RM['pra']['asof']:.2f}, on the
+  {RH['common_player_games']:,} player-games both projected ({RH['not_projected']['player_games']} more appearances,
+  {100 * RH['not_projected']['minutes_share']:.1f}% of the minutes, were by players the pregame projection left out):
+  the results above are an optimistic bound for a real slate (METHODOLOGY section 11, `docs/pregame_rehearsal.json`).
 * **Availability comes from who appeared** for rotation players (the inactive list is not in the sources for the test
   seasons); measured on 2023-24, this flatters minutes by {N['ax.mae_leak']:.3f} MAE and closed-form EB points by
   {N['ax.eb_pts_mae_inactive_list'] - N['ax.eb_pts_mae_appearance_proxy']:.3f} (section 2).

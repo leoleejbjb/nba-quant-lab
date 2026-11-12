@@ -44,6 +44,24 @@ def time_axis(games: pd.DataFrame, upcoming: pd.DataFrame | None = None) -> pd.D
     return ax
 
 
+def info_dates(upcoming: pd.DataFrame, games: pd.DataFrame) -> pd.Series:
+    """(game_id, team_id) -> the date an unplayed game's pregame features are computed as of: its own date if it is
+    not after the last finished game (a final game whose play-by-play is missing, a game in progress), else its
+    team's next unplayed game - the games in between have not been played, so a game ten days ahead must not look
+    as if the player sat out everything until then (days since played, decay, the pool window)."""
+    if upcoming is None or not len(upcoming):
+        return pd.Series(dtype="datetime64[ns]")
+    u = upcoming[["game_id", "team_id", "season", "game_date"]].copy()
+    u["game_date"] = pd.to_datetime(u["game_date"])
+    built = pd.to_datetime(games.loc[games["season"].isin(set(u["season"])), "game_date"])
+    last = built.max() if len(built) else u["game_date"].min() - pd.Timedelta(days=1)
+    ahead = u["game_date"] > last
+    nxt = u[ahead].groupby("team_id")["game_date"].min()
+    u["info_date"] = u["game_date"]
+    u.loc[ahead, "info_date"] = u.loc[ahead, "team_id"].map(nxt)
+    return u.set_index(["game_id", "team_id"])["info_date"]
+
+
 def effective_time(dates: pd.Series, games: pd.DataFrame) -> pd.Series:
     """Map calendar dates to the effective-time axis (days)."""
     seasons = games.groupby("season")["game_date"].agg(["min", "max"]).sort_index()
@@ -80,7 +98,9 @@ def player_features(pg: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     who did not appear (not-played rows get features but add nothing to anyone's history)."""
     df = pg.copy()
     df["one"] = 1.0
-    df["t_eff"] = effective_time(df["game_date"], games).to_numpy()
+    # unplayed games are computed as of their information date (``info_dates``), every other row as of its date
+    asof = df["info_date"].fillna(df["game_date"]) if "info_date" in df else df["game_date"]
+    df["t_eff"] = effective_time(asof, games).to_numpy()
     df = df.sort_values(["person_id", "t_eff", "game_id"]).reset_index(drop=True)
     played = df["played"].to_numpy()
     keys = df["person_id"].to_numpy()
@@ -386,11 +406,15 @@ def build_features(log=print) -> dict:
     # the live season's unplayed games (within the projection horizon) get pregame rows too
     up = upcoming_team_games()
     axis = time_axis(games, up)
+    info = info_dates(up, games)
     team_games = pg[["game_id", "team_id", "game_date"]].drop_duplicates(["game_id", "team_id"])
     ctx_cols = ["game_id", "team_id", "opp_team_id", "season", "game_date", "is_home"]
     ctx_all = pg[ctx_cols].drop_duplicates(["game_id", "team_id"])
     if len(up):
-        team_games = pd.concat([team_games, up[["game_id", "team_id", "game_date"]]], ignore_index=True)
+        # an unplayed game's pool comes from the window before its information date
+        up_tg = up[["game_id", "team_id"]].assign(
+            game_date=info.reindex(pd.MultiIndex.from_frame(up[["game_id", "team_id"]])).to_numpy())
+        team_games = pd.concat([team_games, up_tg], ignore_index=True)
         ctx_all = pd.concat([ctx_all, up[ctx_cols]], ignore_index=True)
     # pregame fringe candidates who did not appear get a (not-played) row, so every candidate is projected
     # the same way whether or not he appears; for unplayed games every pool player is such a candidate
@@ -398,6 +422,10 @@ def build_features(log=print) -> dict:
     cand = candidate_rows(pg, pool, ctx=ctx_all)
     cand["scheduled"] = cand["game_id"].isin(set(up["game_id"]))
     pg = pd.concat([pg.assign(candidate=False, scheduled=False), cand.assign(candidate=True)], ignore_index=True)
+    pg["info_date"] = pd.NaT
+    if pg["scheduled"].any():
+        m = pg["scheduled"].to_numpy()
+        pg.loc[m, "info_date"] = info.reindex(pd.MultiIndex.from_frame(pg.loc[m, ["game_id", "team_id"]])).to_numpy()
     # unplayed games: presumed available = appeared in one of the team's last three games
     sched_rows = pg[pg["scheduled"]]
     streak = missed_streaks(pg, sched_rows) if len(sched_rows) else np.zeros(0, dtype=np.int32)

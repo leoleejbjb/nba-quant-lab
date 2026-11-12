@@ -102,6 +102,23 @@ class InputStore:
             return self.schedule.loc[gid]
         raise KeyError(f"game {gid} is neither built nor in the live schedule")
 
+    def pregame_problem(self, game_id: int) -> str | None:
+        """Why an unplayed game cannot be projected pregame yet (None: it can)."""
+        gid = int(game_id)
+        g = self.game_row(gid)
+        home, away = int(g["home_team_id"]), int(g["away_team_id"])
+        if home <= 0 or away <= 0:
+            return "the teams are not known yet"
+        if gid not in self.tp.index:                    # the team model covers every game in the horizon
+            return "no pregame inputs yet (beyond the projection horizon: run `quantlab live-update` closer to the date)"
+        f = self.by_game.get(gid)
+        have = set(f["team_id"].astype(int)) if f is not None else set()
+        missing = [str(g["home_team"] if t == home else g["away_team"]) for t in (home, away) if t not in have]
+        if missing:
+            return (f"{' and '.join(missing)} {'has' if len(missing) == 1 else 'have'} not played this season yet "
+                    "(no recent roster to project from: projections start after a team's first game)")
+        return None
+
     def league_tov(self, date) -> float:
         """League turnovers per possession over the 60 game-days strictly before ``date``."""
         if pd.Timestamp(date) in self.lg_tov:
@@ -117,6 +134,29 @@ class InputStore:
             return []
         last = d[d["game_date"] == d["game_date"].max()]
         return [int(x) for x in last.loc[last["starter"], "person_id"]]
+
+    def latest_minutes(self, person_id: int, before) -> tuple[float, float]:
+        """Expected minutes when he plays and start rate as of the player's latest game before ``before`` (for a
+        player outside his team's pool whom the injury report brings back)."""
+        f = self.feats
+        d = f[(f["person_id"] == int(person_id)) & (f["game_date"] < pd.Timestamp(before)) & f["played"].eq(True)]
+        if d.empty:
+            return 20.0, 0.0
+        r = d.sort_values("game_date").iloc[-1]
+        m = next((float(r[c]) for c in ("exp_min", "min_l10", "season_min_avg")
+                  if c in r.index and pd.notna(r[c]) and float(r[c]) > 0), 20.0)
+        gp = float(r["gp_m20"]) if "gp_m20" in r.index and pd.notna(r["gp_m20"]) else 0.0
+        return m, (float(r["starts_m20"]) / gp if gp > 0 else 0.0)
+
+    def recent_absentees(self, team_ids, before, exclude=(), days: int = 365) -> list:
+        """(person id, team id, last date) of players whose last game before ``before`` was for one of ``team_ids``
+        within ``days`` and who are not in ``exclude`` - e.g. a long-term absentee outside the 25-day pool."""
+        b, teams, skip, out = np.datetime64(pd.Timestamp(before)), {int(t) for t in team_ids}, set(exclude), []
+        for pid, (dates, tids) in self.played_by_person.items():
+            k = int(np.searchsorted(dates, b, side="left")) - 1
+            if k >= 0 and int(tids[k]) in teams and pid not in skip and (b - dates[k]) <= np.timedelta64(days, "D"):
+                out.append((int(pid), int(tids[k]), pd.Timestamp(dates[k])))
+        return out
 
     def latest_rates(self, person_id: int, before) -> pd.Series | None:
         sub = self.rates_by_person.get(person_id)
@@ -230,13 +270,15 @@ def pregame_team_spec(store: InputStore, game_id: int, team_id: int, overrides: 
     """A team spec for an unplayed game from pregame information only: nothing from the game itself.
 
     * roster: the team's pool (players who appeared for it in the previous 25 days and not elsewhere since);
-    * availability: no injury report - a player who missed the team's last three games or more is presumed out,
-      other rotation players play with the appearance rate of their missed-game streak (tuning season: about 0.9
-      after playing the previous game), fringe players with their share of recent games; ``overrides`` (``out``,
-      ``available``, ``p_play``) are the user's injury report;
+    * availability: no injury report - a rotation player who missed the team's last three games or more is presumed
+      out, other rotation players play with the appearance rate of their missed-game streak (tuning season: about
+      0.9 after playing the previous game), fringe players with their share of recent games; ``overrides`` (``out``,
+      ``available``, ``p_play``, ``starters``, ``teams``) are the user's injury report - an ``available`` player
+      outside the pool (back from a long absence) is added from his latest rates and minutes, on the team he last
+      played for or ``teams[person id]``;
     * minutes: the lineup-blind model (starters are not known), conditional on playing;
-    * starters: ``overrides['starters']`` if given, else the last game's five among the available rotation
-      players, vacancies filled by start rate and then by projected minutes.
+    * starters: ``overrides['starters']`` if given (an announced starter plays), else the last game's five among the
+      available rotation players, vacancies filled by start rate and then by projected minutes.
     """
     ov = overrides or {}
     out, forced, pset = set(ov.get("out", ())), set(ov.get("available", ())), dict(ov.get("p_play", {}))
@@ -280,6 +322,20 @@ def pregame_team_spec(store: InputStore, game_id: int, team_id: int, overrides: 
             rot_rows.append((pid, rr, m, p, start_rate))
         elif pid in share:
             fringe_rows.append((pid, rr, m, float(pset.get(pid, share[pid])), cond_w.get(pid, m)))
+    # 'available' players without a row in this game (outside the 25-day pool: a return from a long absence, a
+    # player who has not played for his new team yet): their latest rates and minutes, on the team they last played
+    # for or the one the report gives (overrides['teams'])
+    all_rows = store.by_game.get(game_id)
+    have = set(all_rows["person_id"].astype(int)) if all_rows is not None else set()
+    placed = {int(k): int(v) for k, v in (ov.get("teams") or {}).items()}
+    for pid in sorted(forced - have - out):
+        if placed.get(pid, store.last_team_before(pid, date)) != int(team_id):
+            continue
+        rr = store.latest_rates(pid, date)
+        if rr is None:
+            continue
+        m, start_rate = store.latest_minutes(pid, date)
+        rot_rows.append((pid, rr, m, float(pset.get(pid, 1.0)), start_rate))
     # starters
     want = [int(x) for x in (ov.get("starters") or {}).get(int(team_id), [])]
     avail_rot = {pid for pid, *_ in rot_rows}
@@ -294,6 +350,8 @@ def pregame_team_spec(store: InputStore, game_id: int, team_id: int, overrides: 
     players = []
     for pid, rr, m, p, _ in sorted(rot_rows, key=lambda x: -x[2]):
         st = pid in five
+        if st and source == "user" and pid not in pset:
+            p = 1.0                                    # an announced starter plays
         players.append(PlayerSpec(pid, store.names.get(pid, str(pid)), _rates_dict(rr), min_mean=m,
                                   min_sd=minutes_sd(m, st), p_play=p, starter=st, rotation=True))
     for pid, rr, m, sh, cw in sorted(fringe_rows, key=lambda x: -x[3] * x[2]):
@@ -339,8 +397,9 @@ def game_spec(store: InputStore, game_id: int, minutes_col: str = "pred_gbm", mo
 
 def pregame_game_spec(store: InputStore, game_id: int, overrides: dict | None = None) -> GameSpec:
     g = store.game_row(game_id)
-    if int(g["home_team_id"]) <= 0 or int(g["away_team_id"]) <= 0:
-        raise PregameInputsMissing(f"game {game_id}: teams not known yet")
+    problem = store.pregame_problem(game_id)
+    if problem:
+        raise PregameInputsMissing(f"game {game_id}: {problem}")
     home, mh = pregame_team_spec(store, game_id, int(g["home_team_id"]), overrides)
     away, ma = pregame_team_spec(store, game_id, int(g["away_team_id"]), overrides)
     tp = store.tp.loc[game_id] if game_id in store.tp.index else None

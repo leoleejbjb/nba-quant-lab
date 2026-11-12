@@ -81,11 +81,14 @@ seasons and is measured instead (item 2), and overtime frequency, fixed only par
 the starting five is projected (the team's last one), availability comes from missed-game streaks (there is no injury
 feed; the injury report can be entered in the dashboard) and minutes from the lineup-blind model. Rehearsed on
 2025-26 through the live feed's format and the real update pipeline, with every game from 2026-01-15 on
-hidden, the 53 games of the following 7 days (1,152 player-games)
-had minutes MAE 5.15 against 4.10 for the backtest's projections of the same
-games, which know who appeared and who started (+26%), points 4.57 against
-4.33 (+6%) and PRA 5.97 against 5.49
-(+9%); 4.0 of 5 projected starters started and
+hidden, the 53 games of the following 7 days had minutes MAE 4.92
+against 4.10 for the backtest's projections of the same games, which know who appeared and who
+started (+20%), points 4.56 against 4.33 (+5%) and PRA
+5.93 against 5.49 (+8%), on the 1,096 of the
+1,152 player-games both projected. The other 56 appearances
+(3.8% of the minutes) were by players the pregame projection left out -
+presumed out after missing three games, or not in the team's 25-day pool; counted as projected 0 they raise its MAE to
+5.51 minutes and 4.76 points. 4.0 of 5 projected starters started and
 16% of the projected rotation players did not play. Spread and total
 RMSE were within 0.12 points of the backtest simulation's and the team model's (53 games
 are too few to tell them apart). The
@@ -106,7 +109,7 @@ make backtest    # simulation backtests: 2023-24 -> blend weight -> blend; 2024-
 make report      # baselines, GBM, matchup ablation, team-first model, summary, FINDINGS    (~15 min)
 make docs        # re-render README results, docs/REPORT.md and docs/report.html from the summary
 make dashboard   # http://localhost:8501
-make test        # 52 tests
+make test        # 69 tests (the slow end-to-end rehearsal test runs with QUANTLAB_SLOW_TESTS=1)
 ```
 
 **Current season.** After the pipeline has run once (`make data models` is enough to start; `make backtest` chooses
@@ -121,9 +124,12 @@ make live                                    # = .venv/bin/quantlab live-update
 make dashboard                               # opens on the next unplayed date; enter the injury report on the Slate
 ```
 
-The game ids are printed by `quantlab slate`. There is no injury feed: a player who missed his team's last three
-games is presumed out and the others play with their missed-game streak's appearance rate, so mark the official
-injury report on the Slate page (or in `data/live_overrides.json`) before projecting. Requests to cdn.nba.com
+The game ids are printed by `quantlab slate`. There is no injury feed: a rotation player who missed his team's last
+three games is presumed out, the other rotation players play with their missed-game streak's appearance rate and
+deep-bench players with their share of the team's recent games, so mark the official
+injury report on the Slate page (or in `data/live_overrides.json`, METHODOLOGY section 11) before projecting: players
+out, and players back - from a short or a long absence. Each change re-projects the teammates' minutes and acts on
+the team's projection the way a Scenario-lab change does. Requests to cdn.nba.com
 identify the program honestly and are never retried under another identity; if the CDN refuses a machine (cloud
 machines are often refused - this build environment was), the update stops with a message.
 
@@ -219,7 +225,8 @@ src/quantlab/
   cli.py, config.py   command line; paths, seasons and the tuning/test split
 scripts/       run_backtests.py, rehearse_live.py (the current-season rehearsal), make_report_page.py
                (docs/report.html), docs/ (README results and REPORT renderers), package.sh
-tests/         52 tests: PBP rules, leakage, simulator invariants, props, scenarios, the live feed, review regressions
+tests/         69 tests: PBP rules, leakage, simulator invariants, props, scenarios, the live feed, the rehearsal,
+               review regressions
 Makefile, make.ps1   pipeline targets (make on Linux/macOS, PowerShell on Windows)
 docs/          REPORT.md, METHODOLOGY.md, DATA.md, FINDINGS_DATA.md (auto-generated), screenshots
 ```

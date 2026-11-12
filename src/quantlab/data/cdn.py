@@ -7,8 +7,11 @@ action) before it is kept, stored gzip-compressed under ``data/raw/live/<season>
 fetched again for a while after the game to pick up the league's post-game stat corrections.
 
 Like every download in this project, requests identify themselves honestly (``download.USER_AGENT``). An access refusal
-(HTTP 401/403/407/451) stops the fetch: it is reported and never retried under another identity. cdn.nba.com refuses
-some cloud machines; run ``quantlab live-update`` on your own computer.
+(HTTP 401/403/407/451 from the CDN, or a proxy refusing the connection) stops the fetch: it is reported and never
+retried under another identity. cdn.nba.com refuses some cloud machines; run ``quantlab live-update`` on your own
+computer. Other failures of a game file (not published yet, a dropped connection, a server error after retries) are
+recorded and that game is tried again on the next update; after several network failures in a row the fetch stops
+and the update goes on with the files already on disk.
 
 ``doc_from_mirror_rows`` and ``schedule_doc`` turn the pinned mirror back into live-format files; they let the whole
 live path be rehearsed on a finished season (scripts/rehearse_live.py) and tested without network access.
@@ -19,8 +22,10 @@ from __future__ import annotations
 import datetime as dt
 import gzip
 import hashlib
+import http.client
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -37,6 +42,13 @@ from .events import parse_clock, read_schedule
 SCHEDULE_URL = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
 PBP_URL = "https://cdn.nba.com/static/json/liveData/playbyplay/playbyplay_{game_id:010d}.json"
 LIC_LIVE = "NBA.com live data feed; NBA.com Terms of Use (personal, non-commercial)"
+# a proxy that refuses the HTTPS tunnel surfaces as a URLError, not an HTTPError
+_TUNNEL_REFUSED = re.compile(r"Tunnel connection failed: (401|403|407|451)\b")
+STOP_AFTER_FAILURES = 5          # network failures of game files in a row before the fetch gives up for this run
+
+
+class FetchError(RuntimeError):
+    """A request that still failed after its retries (network trouble, server errors, a corrupt response)."""
 
 
 def schedule_path(season: str) -> Path:
@@ -70,22 +82,33 @@ def load_schedule(season: str = LIVE_SEASON) -> pd.DataFrame:
 
 
 def _get_json(url: str, timeout: float = 60.0, retries: int = 3) -> dict:
+    """GET a JSON document (gzip-compressed in transit). An access refusal raises ``AccessDenied`` at once and a 404
+    is re-raised as is; other failures are retried with back-off and end in ``FetchError``."""
     last = None
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json",
+                                                       "Accept-Encoding": "gzip"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
+                body = r.read()
+                if str(r.headers.get("Content-Encoding") or "").lower() == "gzip":
+                    body = gzip.decompress(body)
+            return json.loads(body.decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code in DENIED:
                 raise AccessDenied(f"{url}: HTTP {e.code} (access refused; not retried)") from e
             if e.code == 404:
                 raise
             last = e
-        except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as e:
+        except urllib.error.URLError as e:
+            if _TUNNEL_REFUSED.search(str(e.reason)):
+                raise AccessDenied(f"{url}: a proxy refused the connection ({e.reason}; not retried)") from e
+            last = e
+        except (OSError, EOFError, ValueError, http.client.HTTPException) as e:
+            # timeouts, connections cut off mid-transfer, TLS errors, truncated or corrupt bodies
             last = e
         time.sleep(2 ** (attempt + 1))
-    raise RuntimeError(f"{url}: {last}")
+    raise FetchError(f"{url}: {type(last).__name__}: {last}")
 
 
 def check_pbp(doc: dict, game_id: int) -> list[str]:
@@ -133,39 +156,58 @@ def fetch_live(season: str = LIVE_SEASON, refetch_hours: float = 36.0, pause_s: 
                             "status_counts": {k: int(v) for k, v in sched["status"].value_counts().items()}}
 
     games = manifest.setdefault("games", {})
-    fetched, cached, failed = 0, 0, {}
+    fetched, cached, failed, in_a_row, stopped = 0, 0, {}, 0, None
     final = sched[sched["status"] == "final"]
-    for gid, tip in zip(final["game_id"].to_numpy(), final["tip_utc"]):
-        key, path = str(int(gid)), pbp_path(season, gid)
-        recent = pd.notna(tip) and (now - tip.to_pydatetime()) < dt.timedelta(hours=refetch_hours)
-        if path.exists() and games.get(key, {}).get("complete") and not recent:
-            cached += 1
-            continue
-        url = PBP_URL.format(game_id=int(gid))
-        try:
-            pdoc = _get_json(url)
-        except urllib.error.HTTPError as e:            # e.g. 404: not published yet - try again next time
-            failed[key] = f"HTTP {e.code}"
-            continue
-        problems = check_pbp(pdoc, int(gid))
-        if problems:
-            failed[key] = "; ".join(problems)
-            continue
-        games[key] = {"url": url, "sha256": write_json_gz(pdoc, path), "fetched_at": stamp,
-                      "actions": len(pdoc["game"]["actions"]), "complete": True}
-        fetched += 1
-        if fetched % 25 == 0:
-            log(f"[live] {fetched} games downloaded ...")
-        time.sleep(pause_s)
-    manifest["failed"] = failed
-    tmp = manifest_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
-    os.replace(tmp, manifest_path)
+    try:
+        for gid, tip in zip(final["game_id"].to_numpy(), final["tip_utc"]):
+            key, path = str(int(gid)), pbp_path(season, gid)
+            recent = pd.notna(tip) and (now - tip.to_pydatetime()) < dt.timedelta(hours=refetch_hours)
+            if path.exists() and games.get(key, {}).get("complete") and not recent:
+                cached += 1
+                continue
+            if stopped:
+                failed[key] = "not tried (fetch stopped)"
+                continue
+            url = PBP_URL.format(game_id=int(gid))
+            try:
+                pdoc = _get_json(url)
+            except urllib.error.HTTPError as e:        # e.g. 404: not published yet - try again next time
+                failed[key] = f"HTTP {e.code}"
+                continue
+            except FetchError as e:                    # network trouble or server errors after retries
+                failed[key] = str(e)
+                in_a_row += 1
+                if in_a_row >= STOP_AFTER_FAILURES:
+                    stopped = f"{in_a_row} game files failed in a row (last: {e})"
+                    log(f"[live] stopping the fetch: {stopped}; the update goes on with the files on disk")
+                continue
+            finally:
+                time.sleep(pause_s)                    # every request is paced, failed ones too
+            in_a_row = 0
+            problems = check_pbp(pdoc, int(gid))
+            if problems:
+                failed[key] = "; ".join(problems)
+                continue
+            games[key] = {"url": url, "sha256": write_json_gz(pdoc, path), "fetched_at": stamp,
+                          "actions": len(pdoc["game"]["actions"]), "complete": True}
+            fetched += 1
+            if fetched % 25 == 0:
+                log(f"[live] {fetched} games downloaded ...")
+                _write_manifest(manifest, failed, manifest_path)
+    finally:                                           # also on a refusal or Ctrl+C: what is on disk stays known
+        _write_manifest(manifest, failed, manifest_path)
     summary = {"season": season, "scheduled_games": int(len(sched)), "final": int(len(final)), "downloaded": fetched,
-               "cached": cached, "failed": failed}
+               "cached": cached, "failed": failed, "stopped": stopped}
     log(f"[live] {season}: {len(final)} of {len(sched)} games final; {fetched} downloaded, {cached} cached, "
         f"{len(failed)} not available yet")
     return summary
+
+
+def _write_manifest(manifest: dict, failed: dict, path: Path) -> None:
+    manifest["failed"] = failed
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 # ------------------------------------------------------------------ rehearsal / tests: mirror -> live format

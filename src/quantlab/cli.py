@@ -152,19 +152,27 @@ def cmd_project(a) -> None:
     import pandas as pd
     from .live import Projector, box_score_table
     from .sim import props
+    from .sim.inputs import PregameInputsMissing
     from .sim.scenario import Scenario
     pr = Projector()
+    if pr.overrides.get("error"):
+        print(f"[warning] {pr.overrides['error']}")
     sc = Scenario(out=[int(x) for x in a.out.split(",")] if a.out else [])
     try:
         proj = pr.project(a.game_id, n=a.n_sims, environment=a.environment, scenario=sc)
     except KeyError:
         raise SystemExit(f"game {a.game_id} is not in the database or the current season's schedule "
                          "(run `quantlab live-update` for the current season)") from None
+    except PregameInputsMissing as e:
+        raise SystemExit(f"game {a.game_id} cannot be projected yet: {e}") from None
     res = proj.result
     if proj.calibration.get("information_set") == "pregame":
         g = pr.game_info(a.game_id)
-        print(f"[pregame] {pd.Timestamp(g['game_date']).date()}: not played yet - projected from earlier games only, "
-              "with projected starters and availability (players out: --out)")
+        when = ("final, but its play-by-play is not built yet" if str(g.get("status", "")) == "final"
+                else "not played yet")
+        print(f"[pregame] {pd.Timestamp(g['game_date']).date()}: {when} - projected from earlier games only, "
+              "with projected starters and availability (players out: --out, or the injury report in "
+              "data/live_overrides.json)")
         for side in ("away", "home"):
             m = proj.calibration["pregame"][side]
             names = [pr.store.names.get(x, str(x)) for x in m["starters"]]
@@ -196,7 +204,10 @@ def cmd_slate(a) -> None:
     import numpy as np
     import pandas as pd
     from .live import Projector
+    from .sim.inputs import PregameInputsMissing
     pr = Projector()
+    if pr.overrides.get("error"):
+        print(f"[warning] {pr.overrides['error']}")
     date = (pd.Timestamp.now(tz="America/New_York").date() if a.date == "today" else pd.Timestamp(a.date).date())
     sl = pr.slate(date)
     if sl.empty:
@@ -205,14 +216,18 @@ def cmd_slate(a) -> None:
     for g in sl.itertuples(index=False):
         label = f"{g.away_team} @ {g.home_team} (game {int(g.game_id)})"
         if not g.projectable:
-            print(f"  {label}: no pregame inputs yet (outside the projection horizon: run live-update closer to "
-                  "the date)")
+            print(f"  {label}: not projected - {pr.why_not_projectable(int(g.game_id))}")
             continue
-        proj = pr.project(int(g.game_id), n=a.n_sims, environment=a.environment)
+        try:
+            proj = pr.project(int(g.game_id), n=a.n_sims, environment=a.environment)
+        except PregameInputsMissing as e:          # one game's missing inputs must not stop the slate
+            print(f"  {label}: not projected - {e}")
+            continue
         res, spec = proj.result, proj.spec
         sc = res.score.astype(float)
         mg = sc[:, 0] - sc[:, 1]
-        kind = "pregame" if proj.calibration.get("information_set") == "pregame" else "finished game, as backtested"
+        kind = ("finished game, as backtested" if proj.calibration.get("information_set") != "pregame" else
+                "final, box score not built yet: pregame" if str(getattr(g, "status", "")) == "final" else "pregame")
         print(f"  {label}: {sc[:, 1].mean():.1f} - {sc[:, 0].mean():.1f}, home win {(mg > 0).mean():.1%}, "
               f"spread {-mg.mean():+.1f}, total {sc.sum(axis=1).mean():.1f} ({kind})")
         for t, team in enumerate((spec.home, spec.away)):
@@ -243,7 +258,7 @@ def cmd_live_update(a) -> None:
     import pandas as pd
     from .config import LIVE_SEASON, UPCOMING_DAYS
     from .data.build import build_season
-    from .data.cdn import fetch_live
+    from .data.cdn import FetchError, fetch_live
     from .data.database import build_database, upcoming_team_games
     from .data.download import AccessDenied
     from .features.asof import build_features
@@ -264,9 +279,14 @@ def cmd_live_update(a) -> None:
         try:
             fetched = fetch_live(LIVE_SEASON, refetch_hours=a.refetch_hours)
         except AccessDenied as e:
-            raise SystemExit(f"[live] {e}\ncdn.nba.com refused this machine. Requests are never retried under another "
-                             "identity: run `quantlab live-update` on your own computer (cloud machines are often "
-                             "refused), or rebuild from the files already fetched with --skip-fetch.")
+            raise SystemExit(f"[live] {e}\nThe request was refused (by cdn.nba.com, or by a proxy on the way). Requests "
+                             "are never retried under another identity: run `quantlab live-update` on your own "
+                             "computer (cloud machines are often refused) without a proxy that blocks it, or rebuild "
+                             "from the files already fetched with --skip-fetch.") from None
+        except FetchError as e:
+            raise SystemExit(f"[live] could not download the schedule: {e}\nCheck the internet connection and run "
+                             "`quantlab live-update` again, or rebuild from the files already fetched with "
+                             "--skip-fetch.") from None
     q = build_season(LIVE_SEASON, workers=a.workers)
     build_database()
     build_features()
@@ -282,6 +302,8 @@ def cmd_live_update(a) -> None:
               "upcoming_dates": sorted({str(pd.Timestamp(d).date()) for d in up["game_date"]}),
               "fetch": fetched}
     (PATHS.root / "live_status.json").write_text(json.dumps(status, indent=1, default=str), encoding="utf-8")
+    if not status["games_built"]:
+        print(f"[live] {LIVE_SEASON}: no finished games yet - a team's games are projected from its first game on")
     print(f"[live] {LIVE_SEASON}: {status['games_built']} games built through {status['last_game_date']}; "
           f"{status['upcoming_games']} upcoming games with pregame inputs "
           f"({status['upcoming_dates'][0] if status['upcoming_dates'] else '-'} .. "

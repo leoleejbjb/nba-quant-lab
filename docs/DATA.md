@@ -86,9 +86,11 @@ same code:
 
 * **Not pinned**: the season is still being played, so there is no fixed checksum to verify against. Each file's
   SHA-256, URL and fetch time go to `data/raw/live/2026-27/manifest.json`, and a game file is kept only if it is
-  complete: the right game id, a 'game end' action, at least four periods and clocks that parse (a game in progress or
-  a truncated file is tried again on the next update). Games are downloaded again for 36 hours after tip-off
-  (`--refetch-hours`) to pick up the league's post-game stat corrections; older ones are read from disk.
+  complete: the right game id, a 'game end' action, at least four periods and clocks that parse. A game in progress, a
+  truncated file, a file not published yet (404) or a download that still fails after three attempts is recorded in
+  the manifest (`failed`) and tried again on the next update; after five network failures in a row the fetch stops
+  for that run and the update goes on with the files already on disk. Games are downloaded again for 36 hours after
+  tip-off (`--refetch-hours`) to pick up the league's post-game stat corrections; older ones are read from disk.
 * **Checks**: there are no official box scores for the season, so the schedule is the reference for each game's date
   and home team, and a game whose reconstructed final score differs from the schedule's is flagged as not usable for
   lineup-level work (like the pinned seasons' games that fail a check). `data/processed/2026-27/quality.json` (`live`) counts
@@ -100,9 +102,10 @@ same code:
   teams are not known yet are left out). Unplayed games never enter `games`, `player_games` or `team_games`; the
   ones in the next 10 days after the last finished game (`QUANTLAB_UPCOMING_DAYS`) get pregame rows in the feature
   store and the models (METHODOLOGY, section 11).
-* **Access policy**: requests identify the program honestly (the same User-Agent as every download here, with a
-  one-second pause between game files), and an access refusal (HTTP 401/403/407/451) stops the update: it is reported
-  and never retried under another identity. This build environment was refused ("Access Denied"), so the live path
+* **Access policy**: requests identify the program honestly (the same User-Agent as every download here, a
+  one-second pause after every game-file request, gzip-compressed transfers), and an access refusal (HTTP
+  401/403/407/451, or a proxy refusing the connection) stops the update: it is reported and never retried under
+  another identity. This build environment was refused ("Access Denied"), so the live path
   was exercised by a rehearsal instead: `scripts/rehearse_live.py` writes a finished season (2025-26) in the live
   format from the pinned mirror (games before a cutoff final, the rest scheduled; a test checks that the live reader
   reproduces the mirror's events exactly) and runs the real `quantlab live-update --skip-fetch` on it (results in

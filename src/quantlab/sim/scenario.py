@@ -104,7 +104,14 @@ def apply(spec: GameSpec, sc: Scenario, minutes_fn=None) -> GameSpec:
                 p.starter = p.person_id in five
                 if p.starter:
                     p.rotation, p.p_play = True, max(p.p_play, 1.0 if p.person_id not in sc.availability else p.p_play)
-    # usage-efficiency tradeoff: players whose expected load rises shoot less efficiently (and vice versa)
+    usage_tradeoff(new, base_shares)
+    return new
+
+
+def usage_tradeoff(new: GameSpec, base_shares: list) -> None:
+    """The usage-efficiency tradeoff, in place: players whose expected share of their team's plays rose against
+    ``base_shares`` (``expected_shares`` of the reference spec's home and away teams) shoot less efficiently, and
+    vice versa; players not in the reference are left alone."""
     for t, team in enumerate((new.home, new.away)):
         shares = expected_shares(team)
         for p in team.players:
@@ -117,7 +124,6 @@ def apply(spec: GameSpec, sc: Scenario, minutes_fn=None) -> GameSpec:
                 p.rates = dict(p.rates)
                 p.rates["fg2"] = _shift_rate(p.rates["fg2"], d)
                 p.rates["fg3"] = _shift_rate(p.rates["fg3"], d)
-    return new
 
 
 def run_pair(spec: GameSpec, sc: Scenario, n: int = 20000, seed: int = 7, params: SimParams | None = None,

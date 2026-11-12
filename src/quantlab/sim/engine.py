@@ -123,6 +123,9 @@ class SimParams:
     foul_avoid4: float = 0.55       # foul propensity multiplier at 4 fouls / at 5 fouls (players avoid fouling out;
                                     # calibrated on 2023-24 foul-out and 5-foul rates)
     foul_avoid5: float = 0.45
+    fringe_take: float = 0.25       # share of a sitting questionable rotation player's minutes that goes to fringe
+                                    # players (2021-24: fringe minutes = 2.4 + 0.255 x vacated rotation minutes;
+                                    # per season 0.23-0.30); acts only when a rotation player with p_play < 1 sits
 
 
 def load_constants() -> dict:
@@ -396,6 +399,7 @@ class GameSimulator:
         prm[core.P_AVOID5] = p.foul_avoid5
         prm[core.P_TOV_MULT] = p.tov_mult
         prm[core.P_OREB_MULT] = p.oreb_mult
+        prm[core.P_FRINGE_TAKE] = p.fringe_take
         return prm
 
     def _arrays(self):

@@ -27,14 +27,17 @@ with st.sidebar:
         st.warning(f"No games for {season} yet.")
         st.stop()
     unplayed = set(pd.to_datetime(allg.loc[~allg["is_final"], "game_date"]).dt.date)
-    projectable = set(pd.to_datetime(allg.loc[~allg["is_final"] & allg.index.isin(pr.store.by_game.keys()),
-                                              "game_date"]).dt.date)
+    up = allg[~allg["is_final"]]
+    projectable = set(pd.to_datetime(up.loc[[pr.store.pregame_problem(g) is None for g in up.index],
+                                            "game_date"]).dt.date)
     default_date = st.session_state.get("asof_date")
     if default_date not in dates:
-        if projectable:                                    # the current season: the next slate to be played
-            today = pd.Timestamp.now(tz="America/New_York").date()
-            later = sorted(d for d in projectable if d >= today)
-            default_date = later[0] if later else min(projectable)
+        today = pd.Timestamp.now(tz="America/New_York").date()
+        ahead = sorted(d for d in (projectable or unplayed) if d >= today)
+        if ahead:                                          # the current season: the next slate to be played
+            default_date = ahead[0]
+        elif projectable:
+            default_date = min(projectable)
         else:
             counts = pd.to_datetime(allg["game_date"]).dt.date.value_counts()
             full = [d for d in dates if counts.get(d, 0) >= 8 and (dates[-1] - d).days >= 7]

@@ -13,7 +13,9 @@ Two kinds of games:
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
+import os
 from dataclasses import dataclass
 
 import lightgbm as lgb
@@ -24,26 +26,55 @@ from .config import PATHS
 from .models.minutes import FEATURES, FEATURES_PRE, STARTER_FEATURES
 from .sim.engine import GameSimulator, GameSpec, SimParams, SimResult
 from .sim.inputs import InputStore, game_spec
-from .sim.scenario import Scenario, apply
+from .sim.scenario import Scenario, apply, expected_shares, usage_tradeoff
+
+NO_REPORT = {"out": [], "available": [], "p_play": {}, "starters": {}, "teams": {}}
+
+
+def has_report(ov: dict) -> bool:
+    return any(ov.get(k) for k in ("out", "available", "p_play", "starters"))
 
 OVERRIDES_PATH = PATHS.root / "live_overrides.json"
 
 
+def _read_text(path) -> str:
+    """A hand-edited file: UTF-8 with or without a BOM, or UTF-16 (PowerShell 5.1 redirection)."""
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16")
+    return raw.decode("utf-8-sig")
+
+
 def load_overrides() -> dict:
-    """The user's injury report for unplayed games: {'out': [ids], 'available': [ids], 'p_play': {id: p}}."""
+    """The user's injury report for unplayed games: {'out': [person ids], 'available': [person ids],
+    'p_play': {person id: probability}, 'starters': {team id: [five person ids]}, 'teams': {person id: team id}}
+    (JSON keys are strings; 'teams' places an 'available' player who has not played for his team yet, e.g. after a
+    trade). A file that cannot be read is ignored with an 'error' entry that says why."""
+    empty = {"out": [], "available": [], "p_play": {}, "starters": {}, "teams": {}}
     if not OVERRIDES_PATH.exists():
-        return {"out": [], "available": [], "p_play": {}}
-    raw = json.loads(OVERRIDES_PATH.read_text(encoding="utf-8"))
-    return {"out": [int(x) for x in raw.get("out", [])], "available": [int(x) for x in raw.get("available", [])],
-            "p_play": {int(k): float(v) for k, v in (raw.get("p_play") or {}).items()}}
+        return empty
+    try:
+        raw = json.loads(_read_text(OVERRIDES_PATH)) or {}
+        return {"out": [int(x) for x in raw.get("out") or []],
+                "available": [int(x) for x in raw.get("available") or []],
+                "p_play": {int(k): float(v) for k, v in (raw.get("p_play") or {}).items()},
+                "starters": {int(k): [int(x) for x in v] for k, v in (raw.get("starters") or {}).items()},
+                "teams": {int(k): int(v) for k, v in (raw.get("teams") or {}).items()}}
+    except (ValueError, TypeError, AttributeError) as e:
+        return {**empty, "error": f"{OVERRIDES_PATH} could not be read ({type(e).__name__}: {e}); the injury "
+                                  "report is ignored until it is fixed or saved again from the Slate page"}
 
 
 def save_overrides(ov: dict) -> None:
     OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
     clean = {"out": sorted({int(x) for x in ov.get("out", [])}),
              "available": sorted({int(x) for x in ov.get("available", [])}),
-             "p_play": {str(int(k)): float(v) for k, v in (ov.get("p_play") or {}).items()}}
-    OVERRIDES_PATH.write_text(json.dumps(clean, indent=1), encoding="utf-8")
+             "p_play": {str(int(k)): float(v) for k, v in (ov.get("p_play") or {}).items()},
+             "starters": {str(int(k)): [int(x) for x in v] for k, v in (ov.get("starters") or {}).items()},
+             "teams": {str(int(k)): int(v) for k, v in (ov.get("teams") or {}).items()}}
+    tmp = OVERRIDES_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(clean, indent=1), encoding="utf-8")
+    os.replace(tmp, OVERRIDES_PATH)
 
 
 class MinutesReprojector:
@@ -66,13 +97,20 @@ class MinutesReprojector:
                                 if path.exists() else None)
         return self.models[key]
 
-    def __call__(self, game_id: int, team, removed: list) -> None:
+    def __call__(self, game_id: int, team, removed: list, added: dict | None = None,
+                 pregame: bool | None = None) -> None:
+        """Re-project the minutes of ``team``'s remaining players after ``removed`` leave; ``added`` (person id ->
+        expected minutes when he plays) are players back on the team, e.g. a presumed-out player the injury report
+        lists as available - the inverse adjustment (unplayed games only). ``pregame``: the spec is a pregame one
+        (lineup-blind model, starters already picked); default: the game is unplayed."""
+        added = {int(k): float(v) for k, v in (added or {}).items()}
         f = self.by_game.get(game_id)
         if f is None:
             self.last_status = "no minutes features for this game: minutes not re-projected"
             return
         season = str(f["season"].iloc[0])
-        pregame = bool(f["scheduled"].fillna(False).any()) if "scheduled" in f else False
+        if pregame is None:
+            pregame = bool(f["scheduled"].fillna(False).any()) if "scheduled" in f else False
         if self.model(season, pregame) is None:
             self.last_status = (f"no walk-forward minutes model for {season}: minutes not re-projected "
                                 "(removed players' minutes are shared out by the simulator's 240-minute budget)")
@@ -80,23 +118,26 @@ class MinutesReprojector:
         self.last_status = f"minutes re-projected with the model trained on seasons before {season}"
         tf = f[f["team_id"] == team.team_id].set_index("person_id")
         gone = tf.loc[tf.index.intersection(removed)]
-        rest = tf.loc[tf.index.intersection([p.person_id for p in team.players])].copy()
+        back = tf.loc[tf.index.intersection(list(added))]        # returners with a row (base minutes known)
+        rest = tf.loc[tf.index.intersection([p.person_id for p in team.players if p.person_id not in added])].copy()
         if rest.empty:
             return
-        vac = float(gone["base_min"].fillna(0).sum())
-        used_share = float((gone["base_used"].fillna(0).sum() / max(rest["team_used_base"].iloc[0], 1e-9))
-                           if "team_used_base" in rest else 0.0)
-        rest["vacated_min"] = rest["vacated_min"].fillna(0) + vac
+        vac = float(gone["base_min"].fillna(0).sum()) - float(back["base_min"].fillna(0).sum())
+        used_share = float(((gone["base_used"].fillna(0).sum() - back["base_used"].fillna(0).sum())
+                            / max(rest["team_used_base"].iloc[0], 1e-9)) if "team_used_base" in rest else 0.0)
+        rest["vacated_min"] = (rest["vacated_min"].fillna(0) + vac).clip(lower=0)
         rest["slack_min"] = rest["slack_min"].fillna(0) + vac
-        rest["n_absent_15"] = rest["n_absent_15"].fillna(0) + int((gone["base_min"].fillna(0) >= 15).sum())
-        rest["vacated_used_share"] = rest["vacated_used_share"].fillna(0) + used_share
-        avail = rest["avail_exp_min"].fillna(240) - float(gone["exp_min"].fillna(0).sum())
+        rest["n_absent_15"] = (rest["n_absent_15"].fillna(0) + int((gone["base_min"].fillna(0) >= 15).sum())
+                               - int((back["base_min"].fillna(0) >= 15).sum())).clip(lower=0)
+        rest["vacated_used_share"] = (rest["vacated_used_share"].fillna(0) + used_share).clip(lower=0)
+        add_exp = sum(added.values())
+        avail = rest["avail_exp_min"].fillna(240) - float(gone["exp_min"].fillna(0).sum()) + add_exp
         rest["avail_exp_min"] = avail.clip(lower=60)
         rest["share_of_avail"] = rest["exp_min"] / rest["avail_exp_min"]
         if pregame:                    # unplayed game: no starters known, lineup-blind model and context
             gone_exp = float(gone.loc[gone.get("rotation_pre", pd.Series(True, index=gone.index)).astype(bool),
                                       "exp_min"].fillna(0).sum())
-            pre = rest["avail_exp_min_pre"].fillna(240) - gone_exp
+            pre = rest["avail_exp_min_pre"].fillna(240) - gone_exp + add_exp
             rest["avail_exp_min_pre"] = pre.clip(lower=60)
             rest["share_of_avail_pre"] = rest["exp_min"] / rest["avail_exp_min_pre"]
             pred = self.model(season, True).predict(rest[FEATURES_PRE].astype(np.float32))
@@ -142,6 +183,7 @@ class Projector:
         self.reproj = MinutesReprojector()
         self.params = params or SimParams()
         self._shift_cache: dict = {}
+        self._default_specs: dict = {}
         self.overrides = load_overrides()
 
     # ------------------------------------------------------------------ slates
@@ -168,8 +210,11 @@ class Projector:
         tp = self.store.tp
         d = d.join(tp[["exp_home_pts", "exp_away_pts", "exp_margin", "exp_total", "sigma_margin", "p_home_win",
                        "pace"]], how="left")
-        d["projectable"] = d["is_final"] | d.index.isin(self.store.by_game.keys())
+        d["projectable"] = [bool(f) or self.store.pregame_problem(g) is None for g, f in zip(d.index, d["is_final"])]
         return d.reset_index().rename(columns={"index": "game_id"})
+
+    def why_not_projectable(self, game_id: int) -> str:
+        return self.store.pregame_problem(int(game_id)) or ""
 
     def game_info(self, game_id: int) -> pd.Series:
         return self.store.game_row(int(game_id))
@@ -180,40 +225,63 @@ class Projector:
     def set_overrides(self, ov: dict) -> None:
         """Replace the injury report used for unplayed games (persisted to data/live_overrides.json)."""
         save_overrides(ov)
-        self.overrides = load_overrides()
-        self._shift_cache = {k: v for k, v in self._shift_cache.items() if self.is_final(k[0])}
+        self.overrides = load_overrides()           # the environment shifts do not depend on it (default roster)
 
     # ------------------------------------------------------------------ projections
-    def spec(self, game_id: int) -> GameSpec:
+    def default_spec(self, game_id: int) -> GameSpec:
+        """An unplayed game's pregame spec without any injury report: the roster the team model's recent games
+        reflect (presumed availability), on which the environment shift is calibrated."""
+        gid = int(game_id)
+        if gid not in self._default_specs:
+            self._default_specs[gid] = game_spec(self.store, gid, mode="pregame", overrides=NO_REPORT)
+        return copy.deepcopy(self._default_specs[gid])
+
+    def spec(self, game_id: int, overrides: dict | None = None) -> GameSpec:
+        """The game's simulator inputs: as backtested for a finished game; for an unplayed one, pregame with the
+        injury report (``overrides``, default the saved one) applied to the default roster as a scenario would be:
+        teammates' minutes re-projected for every player it removes or brings back, and their shot efficiency
+        following their new share of the plays (the usage-efficiency tradeoff), while the environment shift stays
+        the default roster's - the team model does not know about the report."""
         gid = int(game_id)
         if self.is_final(gid):
             return game_spec(self.store, gid)
-        spec = game_spec(self.store, gid, mode="pregame", overrides=self.overrides)
-        out = set(self.overrides.get("out", ()))
+        ov = self.overrides if overrides is None else overrides
+        if not has_report(ov):
+            return self.default_spec(gid)
+        spec = game_spec(self.store, gid, mode="pregame", overrides=ov)
+        out, back = set(ov.get("out", ())), set(ov.get("available", ()))
         rows = self.store.by_game.get(gid)
-        if out and rows is not None:   # injury report: teammates' minutes re-projected without them
+        if (out or back) and rows is not None:
             from .features.asof import PRESUMED_AVAILABLE_STREAK
             presumed = rows[rows["missed_streak"].fillna(0) <= PRESUMED_AVAILABLE_STREAK] \
                 if "missed_streak" in rows else rows
+            notes = []
             for team in (spec.home, spec.away):
-                # only players the pregame context counted as available (a long absence is already absent)
-                removed = sorted(out & {int(x) for x in presumed.loc[presumed["team_id"] == team.team_id,
-                                                                       "person_id"]})
-                if removed:
-                    self.reproj(gid, team, removed)
-                    spec.meta["minutes_reprojection"] = self.reproj.last_status
+                # the pregame context counted these players as available (a long absence is already absent)
+                counted = {int(x) for x in presumed.loc[presumed["team_id"] == team.team_id, "person_id"]}
+                removed = sorted(out & counted)
+                added = {p.person_id: p.min_mean for p in team.players if p.person_id in back - counted}
+                if removed or added:
+                    self.reproj(gid, team, removed, added, pregame=True)
+                    notes.append(self.reproj.last_status)
+            if notes:
+                spec.meta["minutes_reprojection"] = "; ".join(dict.fromkeys(notes))
+        base = self.default_spec(gid)
+        usage_tradeoff(spec, [expected_shares(base.home), expected_shares(base.away)])
         return spec
 
     def minutes_fn(self, game_id: int):
-        return lambda team, removed: self.reproj(int(game_id), team, removed)
+        pregame = not self.is_final(game_id)
+        return lambda team, removed: self.reproj(int(game_id), team, removed, pregame=pregame)
 
     def environment_shift(self, game_id: int, environment: str, env_weight: float) -> tuple:
-        """Team environment shifts of the *baseline* projection (cached): scenarios reuse them so that a
-        roster change acts bottom-up instead of being re-anchored to a team model that ignores it."""
-        key = (int(game_id), environment, round(float(env_weight), 4),
-               None if self.is_final(game_id) else json.dumps(self.overrides, sort_keys=True))
+        """Team environment shifts of the *baseline* projection (cached): scenarios and the injury report reuse
+        them so that a roster change acts bottom-up instead of being re-anchored to a team model that ignores it.
+        The baseline is the finished game as backtested, or an unplayed game's default pregame roster."""
+        key = (int(game_id), environment, round(float(env_weight), 4))
         if key not in self._shift_cache:
-            sim = GameSimulator(self.spec(game_id), self.params)
+            base = game_spec(self.store, int(game_id)) if self.is_final(game_id) else self.default_spec(game_id)
+            sim = GameSimulator(base, self.params)
             sim.calibrate(environment=environment, env_weight=env_weight, n_pilot=1500)
             self._shift_cache[key] = (sim.teams[0].eff_shift, sim.teams[1].eff_shift)
         return self._shift_cache[key]
@@ -222,7 +290,14 @@ class Projector:
                 env_weight: float | None = None, scenario: Scenario | None = None,
                 base_spec: GameSpec | None = None) -> Projection:
         w = env_weight if env_weight is not None else default_blend_weight()
-        spec = copy.deepcopy(base_spec) if base_spec is not None else self.spec(game_id)
+        if base_spec is None and scenario is not None and scenario.out and not self.is_final(game_id):
+            # an unplayed game: the scenario's removals join the injury report - one minutes re-projection for
+            # everyone missing and the starting five re-picked - and the rest of the scenario applies on top
+            ov = {**self.overrides, "out": sorted(set(self.overrides.get("out", [])) | {int(x) for x in scenario.out})}
+            spec = self.spec(game_id, overrides=ov)
+            scenario = dataclasses.replace(scenario, out=[])
+        else:
+            spec = copy.deepcopy(base_spec) if base_spec is not None else self.spec(game_id)
         shift = self.environment_shift(game_id, environment, w) if environment != "none" else (0.0, 0.0)
         self.reproj.last_status = ""
         if scenario is not None and not scenario.is_empty():
@@ -234,8 +309,9 @@ class Projector:
         info["information_set"] = spec.meta.get("mode", "asof")
         if spec.meta.get("mode") == "pregame":
             info["pregame"] = {k: spec.meta[k] for k in ("home", "away") if k in spec.meta}
-        if self.reproj.last_status:
-            info["minutes_reprojection"] = self.reproj.last_status
+        notes = [x for x in (spec.meta.get("minutes_reprojection"), self.reproj.last_status) if x]
+        if notes:
+            info["minutes_reprojection"] = "; ".join(dict.fromkeys(notes))
         res = sim.run(n, seed=seed)
         return Projection(int(game_id), spec, res, info)
 

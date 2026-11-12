@@ -90,7 +90,9 @@ def render() -> None:
         result = f"**final {away.name} {int(g['away_pts'])} – {int(g['home_pts'])} {home.name}**"
     else:
         from quantlab.dashboard.view_slate import result_label
-        result = f"**not played yet ({result_label(pd.Series({**g.to_dict(), 'is_final': False}))})**"
+        label = result_label(pd.Series({**g.to_dict(), "is_final": False}))
+        result = (f"**{label}: projected pregame**" if str(g.get("status", "")) == "final"
+                  else f"**not played yet ({label})**")
     st.caption(f"{pd.Timestamp(g['game_date']):%a %b %d, %Y} · {res.n:,} simulated games · environment: "
                f"{st.session_state['environment']} · {team_line} · {result}")
     if not final:
