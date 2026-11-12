@@ -36,15 +36,18 @@ def injury_report(pr, sl: pd.DataFrame) -> None:
     rows = pd.concat([pr.store.by_game[g] for g in gids if g in pr.store.by_game]) if gids else pd.DataFrame()
     if rows.empty:
         return
-    tri = {}
+    tri, proj_teams = {}, set()
     for r in sl.itertuples():
         tri[int(r.home_team_id)], tri[int(r.away_team_id)] = r.home_team, r.away_team
+        if int(r.game_id) in gids:
+            proj_teams |= {int(r.home_team_id), int(r.away_team_id)}
     rows = rows.drop_duplicates("person_id")
     label = {int(p): f"{pr.store.names.get(int(p), p)} ({tri.get(int(t), '')})"
              for p, t in zip(rows["person_id"], rows["team_id"])}
     # players of these teams outside the 25-day pool (long absences): they can only be marked available
     away = {pid: f"{pr.store.names.get(pid, pid)} ({tri.get(tid, '')}, last played {d:%b %d, %Y})"
-            for pid, tid, d in pr.store.recent_absentees(tri, pd.Timestamp(sl["game_date"].min()), exclude=label)}
+            for pid, tid, d in pr.store.recent_absentees(proj_teams, pd.Timestamp(sl["game_date"].min()),
+                                                          exclude=label)}
     names = {**away, **label}
     team_tri = {**dict(zip(pr.store.games["home_team_id"], pr.store.games["home_team"])),
                 **dict(zip(pr.store.games["away_team_id"], pr.store.games["away_team"]))}

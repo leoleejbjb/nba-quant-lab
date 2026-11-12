@@ -296,18 +296,26 @@ def cmd_live_update(a) -> None:
     run_rates(tune=False)
     run_opponent(tune=False)
     up = upcoming_team_games()
+    # projectable: both teams have pregame rows (a team that has not played this season has none) and a team-model line
+    fs = pd.read_parquet(PATHS.features / "player_asof.parquet", columns=["game_id", "team_id", "scheduled"])
+    fs = fs[fs["scheduled"].eq(True)]
+    tp_ids = set(pd.read_parquet(PATHS.models / "team_predictions.parquet", columns=["game_id"])["game_id"])
+    both = fs.groupby("game_id")["team_id"].nunique()
+    n_proj = int(sum(1 for g in up["game_id"].unique() if both.get(g, 0) == 2 and g in tp_ids))
     status = {"season": LIVE_SEASON, "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
               "games_built": int(q.get("games", 0)), "last_game_date": q.get("live", {}).get("last_game_date"),
-              "upcoming_games": int(up["game_id"].nunique()), "upcoming_days": UPCOMING_DAYS,
+              "upcoming_games": int(up["game_id"].nunique()), "projectable_games": n_proj,
+              "upcoming_days": UPCOMING_DAYS,
               "upcoming_dates": sorted({str(pd.Timestamp(d).date()) for d in up["game_date"]}),
               "fetch": fetched}
     (PATHS.root / "live_status.json").write_text(json.dumps(status, indent=1, default=str), encoding="utf-8")
     if not status["games_built"]:
         print(f"[live] {LIVE_SEASON}: no finished games yet - a team's games are projected from its first game on")
-    print(f"[live] {LIVE_SEASON}: {status['games_built']} games built through {status['last_game_date']}; "
-          f"{status['upcoming_games']} upcoming games with pregame inputs "
+    print(f"[live] {LIVE_SEASON}: {status['games_built']} games built through {status['last_game_date'] or '-'}; "
+          f"{status['upcoming_games']} upcoming games in the next {UPCOMING_DAYS} days "
           f"({status['upcoming_dates'][0] if status['upcoming_dates'] else '-'} .. "
-          f"{status['upcoming_dates'][-1] if status['upcoming_dates'] else '-'})")
+          f"{status['upcoming_dates'][-1] if status['upcoming_dates'] else '-'}), "
+          f"{n_proj} of them projectable (both teams have played this season)")
 
 
 def cmd_dashboard(a) -> None:

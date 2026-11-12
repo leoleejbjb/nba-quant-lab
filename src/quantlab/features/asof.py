@@ -45,16 +45,21 @@ def time_axis(games: pd.DataFrame, upcoming: pd.DataFrame | None = None) -> pd.D
 
 
 def info_dates(upcoming: pd.DataFrame, games: pd.DataFrame) -> pd.Series:
-    """(game_id, team_id) -> the date an unplayed game's pregame features are computed as of: its own date if it is
-    not after the last finished game (a final game whose play-by-play is missing, a game in progress), else its
-    team's next unplayed game - the games in between have not been played, so a game ten days ahead must not look
-    as if the player sat out everything until then (days since played, decay, the pool window)."""
+    """(game_id, team_id) -> the date an unplayed game's pregame features are computed as of: its team's next unplayed
+    game after its last built one (a game in progress or a final not built yet included) - the games in between have
+    not been played, so a game ten days ahead must not look as if the player sat out everything until then (days
+    since played, decay, the pool window); an unbuilt game before the team's last built one keeps its own date."""
     if upcoming is None or not len(upcoming):
         return pd.Series(dtype="datetime64[ns]")
     u = upcoming[["game_id", "team_id", "season", "game_date"]].copy()
     u["game_date"] = pd.to_datetime(u["game_date"])
-    built = pd.to_datetime(games.loc[games["season"].isin(set(u["season"])), "game_date"])
-    last = built.max() if len(built) else u["game_date"].min() - pd.Timedelta(days=1)
+    g = games[games["season"].isin(set(u["season"]))]
+    # each team's own last built game: its unplayed games after it are anchored at the first of them (a game in
+    # progress or a final not built yet included); an unbuilt game before it keeps its own date
+    team_last = pd.concat([g[["home_team_id", "game_date"]].set_axis(["team_id", "game_date"], axis=1),
+                           g[["away_team_id", "game_date"]].set_axis(["team_id", "game_date"], axis=1)])
+    team_last = pd.to_datetime(team_last["game_date"]).groupby(team_last["team_id"]).max()
+    last = u["team_id"].map(team_last).fillna(u["game_date"].min() - pd.Timedelta(days=1))
     ahead = u["game_date"] > last
     nxt = u[ahead].groupby("team_id")["game_date"].min()
     u["info_date"] = u["game_date"]

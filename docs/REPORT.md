@@ -272,12 +272,15 @@ corrected ones.
   `quantlab live-update` (the CDN refused this build environment, so the fetch itself is untested here) and its
   unplayed games are projected with pregame information only: projected starters, availability from missed-game
   streaks (there is no injury feed; the user enters the injury report). Rehearsed on 2025-26 with the games from
-  2026-01-15 on hidden (53 games in the following week), minutes MAE was 4.92
-  against 4.10 for the backtest's projections of the same games, points 4.56
-  against 4.33 and PRA 5.93 against 5.49, on the
+  2026-01-15 on hidden (53 games in the following week), minutes MAE was 4.97
+  against 4.10 for the backtest's projections of the same games, points 4.58
+  against 4.33 and PRA 5.98 against 5.49, on the
   1,096 player-games both projected (56 more appearances,
   3.8% of the minutes, were by players the pregame projection left out):
-  the results above are an optimistic bound for a real slate (METHODOLOGY section 11, `docs/pregame_rehearsal.json`).
+  the results above are an optimistic bound for a real slate. Deep-bench players appear in
+  58% of their simulated games against 43% in
+  reality (their minutes are about right), so their P(play) is overstated in pregame projections (METHODOLOGY section
+  11, `docs/pregame_rehearsal.json`).
 * **Availability comes from who appeared** for rotation players (the inactive list is not in the sources for the test
   seasons); measured on 2023-24, this flatters minutes by 0.066 MAE and closed-form EB points by
   0.011 (section 2).

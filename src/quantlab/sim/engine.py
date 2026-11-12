@@ -123,9 +123,10 @@ class SimParams:
     foul_avoid4: float = 0.55       # foul propensity multiplier at 4 fouls / at 5 fouls (players avoid fouling out;
                                     # calibrated on 2023-24 foul-out and 5-foul rates)
     foul_avoid5: float = 0.45
-    fringe_take: float = 0.25       # share of a sitting questionable rotation player's minutes that goes to fringe
-                                    # players (2021-24: fringe minutes = 2.4 + 0.255 x vacated rotation minutes;
-                                    # per season 0.23-0.30); acts only when a rotation player with p_play < 1 sits
+    fringe_take: float = 0.15       # deep-bench boost when a questionable rotation player (p_play < 1) sits: chosen
+                                    # on 2023-24 pregame specs so the simulated slope of fringe minutes on the sitting
+                                    # players' planned minutes (0.26; 0.04 from the 240-minute normalisation alone)
+                                    # matches the 2021-24 data (fringe minutes = 2.4 + 0.255 x vacated rotation min)
 
 
 def load_constants() -> dict:
@@ -423,9 +424,12 @@ class GameSimulator:
         garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off = self._arrays()
         # lineup histograms hold 2**P cells per chunk: fewer chunks when tracking a large roster
         n_chunks = int(min(max(4, n // 64), 32 if (track and self.P > 15) else 256))
-        return core.simulate(int(n), n_chunks, int(seed), self.rates, self.exists,
-                             self.p_play if p_play is None else p_play, plan, self.min_sd,
-                             self.starter, self.rotation, self.usage_mult, self.cap, self.q, self.cumfrac, self.dfac,
+        pp = self.p_play if p_play is None else p_play
+        # fringe players whose participation may rise when a questionable rotation player sits (not user-set)
+        boost = (self.exists & ~self.rotation & ~self.locked & (pp > 0)).astype(np.float64)
+        return core.simulate(int(n), n_chunks, int(seed), self.rates, self.exists, pp, plan, self.min_sd,
+                             self.starter, self.rotation, boost, self.usage_mult, self.cap, self.q, self.cumfrac,
+                             self.dfac,
                              garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off, self._prm(shift), self.P,
                              track)
 

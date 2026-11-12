@@ -46,7 +46,10 @@ def _link(src: Path, dst: Path) -> None:
             import _winapi
             _winapi.CreateJunction(str(src), str(dst))
         else:
-            os.link(src, dst)
+            try:
+                os.link(src, dst)
+            except OSError:                            # another drive: hard links cannot cross volumes
+                shutil.copy2(src, dst)
 
 
 def _check_folder(folder: Path) -> Path:
@@ -70,6 +73,8 @@ def env_for(folder: Path, horizon: int) -> dict:
 def prepare(folder: Path, cutoff: pd.Timestamp) -> None:
     sys.path.insert(0, str(ROOT / "src"))
     data = _check_folder(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "rehearsal.json").write_text('{"complete": false}', encoding="utf-8")   # this folder is a rehearsal's
     if data.exists():
         shutil.rmtree(data)
     (data / "raw").mkdir(parents=True)
@@ -98,8 +103,8 @@ def prepare(folder: Path, cutoff: pd.Timestamp) -> None:
     for gid, rows in csv.groupby("gameId"):
         write_json_gz(doc_from_mirror_rows(rows), pbp_path(SEASON, gid))
     (folder / "rehearsal.json").write_text(json.dumps({"season": SEASON, "cutoff": str(cutoff.date()),
-                                                       "final_games": len(final), "games": int(len(games))}, indent=1),
-                                           encoding="utf-8")
+                                                       "final_games": len(final), "games": int(len(games)),
+                                                       "complete": True}, indent=1), encoding="utf-8")
     print(f"[rehearse] {folder}: {len(final)} of {len(games)} {SEASON} games final before {cutoff.date()}")
 
 
@@ -117,7 +122,10 @@ def main() -> None:
     ap.add_argument("--sims", type=int, default=2000)
     ap.add_argument("--score-only", action="store_true", help="evaluate: re-score the saved projections")
     a = ap.parse_args()
-    a.dir.mkdir(parents=True, exist_ok=True)
+    if a.step in ("prepare", "all"):
+        _check_folder(a.dir)                          # before anything is created
+    else:
+        a.dir.mkdir(parents=True, exist_ok=True)
     if a.step in ("prepare", "all"):
         prepare(a.dir, pd.Timestamp(a.cutoff))
     if a.step in ("update", "all"):

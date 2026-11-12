@@ -525,7 +525,10 @@ limitations = f"""
   against {RM['pts']['asof']:.2f} and PRA {RM['pra']['pregame']:.2f} against {RM['pra']['asof']:.2f}, on the
   {RH['common_player_games']:,} player-games both projected ({RH['not_projected']['player_games']} more appearances,
   {100 * RH['not_projected']['minutes_share']:.1f}% of the minutes, were by players the pregame projection left out):
-  the results above are an optimistic bound for a real slate (METHODOLOGY section 11, `docs/pregame_rehearsal.json`).
+  the results above are an optimistic bound for a real slate. Deep-bench players appear in
+  {100 * RH['deep_bench']['p_play_simulated']:.0f}% of their simulated games against {100 * RH['deep_bench']['appeared']:.0f}% in
+  reality (their minutes are about right), so their P(play) is overstated in pregame projections (METHODOLOGY section
+  11, `docs/pregame_rehearsal.json`).
 * **Availability comes from who appeared** for rotation players (the inactive list is not in the sources for the test
   seasons); measured on 2023-24, this flatters minutes by {N['ax.mae_leak']:.3f} MAE and closed-form EB points by
   {N['ax.eb_pts_mae_inactive_list'] - N['ax.eb_pts_mae_appearance_proxy']:.3f} (section 2).

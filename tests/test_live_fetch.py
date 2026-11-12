@@ -168,6 +168,41 @@ def test_a_proxy_refusal_is_an_access_refusal(monkeypatch):
     assert len(calls) == 1
 
 
+def test_a_corrupt_body_is_retried_and_a_404_resets_the_failure_count(monkeypatch, tmp_path):
+    import gzip
+
+    class Bad(_Resp):
+        def __init__(self):
+            io.BytesIO.__init__(self, gzip.compress(b'{"x": 1}')[:12] + b"\xff" * 20)   # gzip header, bad stream
+            self.headers = {"Content-Encoding": "gzip"}
+
+    calls = []
+    monkeypatch.setattr(cdn.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cdn.urllib.request, "urlopen", lambda req, timeout=None: calls.append(1) or Bad())
+    try:
+        cdn._get_json(cdn.SCHEDULE_URL)
+        raise AssertionError("expected FetchError")
+    except cdn.FetchError:
+        pass
+    assert len(calls) == 3                                         # retried, then reported
+    old = "2026-10-21T23:30:00Z"
+    gids = list(range(22600401, 22600411))
+    sched = {"leagueSchedule": {"gameDates": [{"gameDate": "x", "games": [_game(g, 3, old, hs=100, as_=90)
+                                                                            for g in gids]}]}}
+
+    def fake(req, timeout=None):                                   # network failures alternate with 404s
+        if req.full_url == cdn.SCHEDULE_URL:
+            return _Resp(sched)
+        gid = int(req.full_url.rsplit("_", 1)[1].split(".")[0])
+        if gid % 2:
+            raise urllib.error.URLError(ConnectionResetError("reset"))
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+    monkeypatch.setattr(cdn, "PATHS", Paths(root=tmp_path))
+    monkeypatch.setattr(cdn.urllib.request, "urlopen", fake)
+    s = cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
+    assert not s["stopped"] and "not tried" not in "".join(s["failed"].values())
+
+
 def test_gzip_responses_are_decompressed(monkeypatch):
     import gzip
 

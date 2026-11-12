@@ -81,14 +81,14 @@ seasons and is measured instead (item 2), and overtime frequency, fixed only par
 the starting five is projected (the team's last one), availability comes from missed-game streaks (there is no injury
 feed; the injury report can be entered in the dashboard) and minutes from the lineup-blind model. Rehearsed on
 2025-26 through the live feed's format and the real update pipeline, with every game from 2026-01-15 on
-hidden, the 53 games of the following 7 days had minutes MAE 4.92
+hidden, the 53 games of the following 7 days had minutes MAE 4.97
 against 4.10 for the backtest's projections of the same games, which know who appeared and who
-started (+20%), points 4.56 against 4.33 (+5%) and PRA
-5.93 against 5.49 (+8%), on the 1,096 of the
+started (+21%), points 4.58 against 4.33 (+6%) and PRA
+5.98 against 5.49 (+9%), on the 1,096 of the
 1,152 player-games both projected. The other 56 appearances
 (3.8% of the minutes) were by players the pregame projection left out -
 presumed out after missing three games, or not in the team's 25-day pool; counted as projected 0 they raise its MAE to
-5.51 minutes and 4.76 points. 4.0 of 5 projected starters started and
+5.56 minutes and 4.78 points. 4.0 of 5 projected starters started and
 16% of the projected rotation players did not play. Spread and total
 RMSE were within 0.12 points of the backtest simulation's and the team model's (53 games
 are too few to tell them apart). The
@@ -109,7 +109,7 @@ make backtest    # simulation backtests: 2023-24 -> blend weight -> blend; 2024-
 make report      # baselines, GBM, matchup ablation, team-first model, summary, FINDINGS    (~15 min)
 make docs        # re-render README results, docs/REPORT.md and docs/report.html from the summary
 make dashboard   # http://localhost:8501
-make test        # 69 tests (the slow end-to-end rehearsal test runs with QUANTLAB_SLOW_TESTS=1)
+make test        # 72 tests (the slow end-to-end rehearsal test runs with QUANTLAB_SLOW_TESTS=1)
 ```
 
 **Current season.** After the pipeline has run once (`make data models` is enough to start; `make backtest` chooses
@@ -225,7 +225,7 @@ src/quantlab/
   cli.py, config.py   command line; paths, seasons and the tuning/test split
 scripts/       run_backtests.py, rehearse_live.py (the current-season rehearsal), make_report_page.py
                (docs/report.html), docs/ (README results and REPORT renderers), package.sh
-tests/         69 tests: PBP rules, leakage, simulator invariants, props, scenarios, the live feed, the rehearsal,
+tests/         72 tests: PBP rules, leakage, simulator invariants, props, scenarios, the live feed, the rehearsal,
                review regressions
 Makefile, make.ps1   pipeline targets (make on Linux/macOS, PowerShell on Windows)
 docs/          REPORT.md, METHODOLOGY.md, DATA.md, FINDINGS_DATA.md (auto-generated), screenshots

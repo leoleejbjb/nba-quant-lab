@@ -124,9 +124,20 @@ def test_a_sitting_questionable_player_gives_the_deep_bench_a_share(game, consta
     g.home.players[1].p_play = 0.5                         # a questionable 34-minute player
     fringe = [i for i, p in enumerate(g.home.players) if not p.rotation]
     out = {}
-    for take in (0.0, 0.25):
+    for take in (0.0, 0.15):
         _, r = run(g, constants, n=4000, seed=4, fringe_take=take)
         sat = r.secs[:, 0, 1] == 0
         out[take] = (r.secs[:, 0, fringe].sum(axis=1)[sat].mean() / 60, r.secs[:, 0, fringe].sum(axis=1)[~sat].mean() / 60)
-    assert out[0.25][0] > out[0.0][0] + 2.0                # more deep-bench minutes on the nights he sits ...
-    assert abs(out[0.25][1] - out[0.0][1]) < 0.5           # ... and the same on the nights he plays
+    assert out[0.15][0] > out[0.0][0] + 1.0                # more deep-bench minutes on the nights he sits ...
+    assert abs(out[0.15][1] - out[0.0][1]) < 0.5           # ... and the same on the nights he plays
+
+
+def test_a_bench_player_set_not_to_play_never_plays(game, constants):
+    """The deep-bench boost leaves alone a participation the user set (locked) and players at P(play) 0."""
+    g = copy.deepcopy(game)
+    for p in g.home.players[:9]:
+        p.p_play = 0.6                                     # many questionable rotation players sit
+    deep = g.home.players[10]
+    deep.p_play, deep.locked = 0.0, True
+    _, r = run(g, constants, n=3000, seed=6, fringe_take=0.15)
+    assert (r.secs[:, 0, 10] == 0).all()

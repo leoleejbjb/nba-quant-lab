@@ -92,6 +92,18 @@ def score(players: pd.DataFrame, teams: pd.DataFrame, main: Path, season: str) -
                             "presumed_out_after_streak": int((miss["missed_streak"] > PRESUMED_AVAILABLE_STREAK).sum()),
                             "not_in_pool": int(miss["missed_streak"].isna().sum()),
                             "minutes_share": float(miss["min"].sum() / j["min"].sum())}
+    # the deep bench (projected non-rotation players): simulated participation and minutes against what happened;
+    # rotation players' minutes when they play
+    fr = players[~players["rotation_proj"].astype(bool)].merge(
+        pg[["game_id", "team_id", "person_id", "played", "min"]], on=["game_id", "team_id", "person_id"], how="left")
+    appeared = fr["played"].astype("boolean").fillna(False).astype(bool)
+    per_tg = fr.assign(act=fr["min"].where(appeared, 0.0).fillna(0.0)).groupby(["game_id", "team_id"]).agg(
+        sim=("pre_min_uncond", "sum"), act=("act", "sum"))
+    out["deep_bench"] = {"p_play_simulated": float(fr["p_play"].mean()), "appeared": float(appeared.mean()),
+                         "minutes_per_team_game_simulated": float(per_tg["sim"].mean()),
+                         "minutes_per_team_game_actual": float(per_tg["act"].mean())}
+    rot_played = common[common["rotation_proj"].astype(bool)]
+    out["rotation_minutes_bias_when_playing"] = float((rot_played["pre_min"] - rot_played["min"]).mean())
     # starters: projected five vs actual five
     st_act = pg[pg["starter"] & pg["played"]].groupby(["game_id", "team_id"])["person_id"].apply(set)
     st_pre = players[players["starter_proj"]].groupby(["game_id", "team_id"])["person_id"].apply(set)

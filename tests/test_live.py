@@ -179,13 +179,20 @@ def test_result_label_shows_tip_time_for_unplayed_games():
 
 def test_info_dates_anchor_games_ahead_on_the_teams_next_game():
     from quantlab.features.asof import info_dates
-    games = pd.DataFrame({"season": ["2026-27"] * 2, "game_date": pd.to_datetime(["2026-11-09", "2026-11-10"])})
-    up = pd.DataFrame({"game_id": [1, 2, 3, 4], "team_id": [10, 10, 10, 20], "season": ["2026-27"] * 4,
-                       "game_date": pd.to_datetime(["2026-11-08", "2026-11-12", "2026-11-15", "2026-11-13"])})
+    # built: 11-08 team 20, 11-09 team 10, 11-10 teams 50/60 (the league's last built date)
+    games = pd.DataFrame({"season": ["2026-27"] * 3, "game_date": pd.to_datetime(["2026-11-08", "2026-11-09",
+                                                                                   "2026-11-10"]),
+                          "home_team_id": [20, 10, 50], "away_team_id": [70, 30, 60]})
+    up = pd.DataFrame({"game_id": [1, 2, 3, 4, 5, 6], "team_id": [10, 10, 10, 20, 20, 40],
+                       "season": ["2026-27"] * 6,
+                       "game_date": pd.to_datetime(["2026-11-08", "2026-11-12", "2026-11-15", "2026-11-10",
+                                                    "2026-11-11", "2026-11-12"])})
     d = info_dates(up, games)
-    assert str(d[(1, 10)].date()) == "2026-11-08"          # final but not built: as of its own date
+    assert str(d[(1, 10)].date()) == "2026-11-08"          # final but not built, before its team's last game: own date
     assert str(d[(2, 10)].date()) == "2026-11-12" and str(d[(3, 10)].date()) == "2026-11-12"   # team's next game
-    assert str(d[(4, 20)].date()) == "2026-11-13"
+    # team 20's game of 11-10 is still in progress: its back-to-back is anchored at it, not at its own date
+    assert str(d[(4, 20)].date()) == "2026-11-10" and str(d[(5, 20)].date()) == "2026-11-10"
+    assert str(d[(6, 40)].date()) == "2026-11-12"          # a team with no built game: its first game
 
 
 def test_pregame_problem_names_a_team_without_a_game_yet():
@@ -202,6 +209,8 @@ def test_pregame_problem_names_a_team_without_a_game_yet():
     assert "not known" in st.pregame_problem(9)
     assert "HOM and AWY have not played" in st.pregame_problem(10)       # opening night: no rosters at all
     assert "beyond the projection horizon" in st.pregame_problem(11)      # no team-model line either
+    st.schedule["status"] = ["scheduled"] * 4 + ["postponed"]
+    assert "postponed" in st.pregame_problem(11)
 
 
 def test_overrides_round_trip_keeps_integer_keys(monkeypatch, tmp_path):
@@ -286,3 +295,27 @@ def test_the_injury_report_acts_like_a_scenario(monkeypatch):
     via_report = pr.project(gid, n=1000, seed=3, environment="blend")
     assert (via_report.result.score == via_scenario.result.score).all()
     assert via_report.result.score[:, 0].mean() < base.result.score[:, 0].mean() - 0.3
+    # the team model does not know about the report: the environment shift stays the default roster's
+    assert via_report.calibration["environment_shift"] == base.calibration["environment_shift"]
+
+
+@pytest.mark.skipif(not BUILT, reason="needs the built feature store and models")
+def test_announced_starters_start_and_a_trade_moves_a_player(monkeypatch):
+    from quantlab.live import NO_REPORT, Projector
+    pr = Projector()
+    gid = int(pr.store.games[pr.store.games["season"] == "2025-26"].index[400])
+    _unplayed(pr, gid, monkeypatch)
+    g = pr.store.games.loc[gid]
+    home, away = int(g["home_team_id"]), int(g["away_team_id"])
+    base = pr.default_spec(gid)
+    deep = next(p for p in base.home.players if not p.rotation)        # a deep-bench player of the home team
+    five = [p.person_id for p in base.home.players if p.starter][:4] + [deep.person_id]
+    spec = pr.spec(gid, overrides={**NO_REPORT, "starters": {home: five}})
+    st = {p.person_id: p for p in spec.home.players}
+    assert {pid for pid, p in st.items() if p.starter} == set(five)
+    assert st[deep.person_id].rotation and st[deep.person_id].p_play == 1.0
+    # 'teams' moves a player: off his team's roster, onto the other team's
+    mover = next(p for p in base.home.players if p.rotation and not p.starter).person_id
+    spec = pr.spec(gid, overrides={**NO_REPORT, "available": [mover], "teams": {mover: away}})
+    assert mover not in {p.person_id for p in spec.home.players}
+    assert mover in {p.person_id for p in spec.away.players}

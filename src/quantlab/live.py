@@ -249,24 +249,21 @@ class Projector:
         if not has_report(ov):
             return self.default_spec(gid)
         spec = game_spec(self.store, gid, mode="pregame", overrides=ov)
-        out, back = set(ov.get("out", ())), set(ov.get("available", ()))
-        rows = self.store.by_game.get(gid)
-        if (out or back) and rows is not None:
-            from .features.asof import PRESUMED_AVAILABLE_STREAK
-            presumed = rows[rows["missed_streak"].fillna(0) <= PRESUMED_AVAILABLE_STREAK] \
-                if "missed_streak" in rows else rows
-            notes = []
-            for team in (spec.home, spec.away):
-                # the pregame context counted these players as available (a long absence is already absent)
-                counted = {int(x) for x in presumed.loc[presumed["team_id"] == team.team_id, "person_id"]}
-                removed = sorted(out & counted)
-                added = {p.person_id: p.min_mean for p in team.players if p.person_id in back - counted}
-                if removed or added:
-                    self.reproj(gid, team, removed, added, pregame=True)
-                    notes.append(self.reproj.last_status)
-            if notes:
-                spec.meta["minutes_reprojection"] = "; ".join(dict.fromkeys(notes))
         base = self.default_spec(gid)
+        notes = []
+        for team, bteam in ((spec.home, base.home), (spec.away, base.away)):
+            # relative to the default roster (the one the pregame context and the team model reflect): removals are
+            # its rotation players who are gone (ruled out, moved to another team), returns are rotation players it
+            # did not have, however the report brought them back (available, p_play, an announced starter, a player
+            # from outside the pool)
+            had = {p.person_id for p in bteam.players}
+            removed = sorted({p.person_id for p in bteam.players if p.rotation} - {p.person_id for p in team.players})
+            added = {p.person_id: p.min_mean for p in team.players if p.rotation and p.person_id not in had}
+            if removed or added:
+                self.reproj(gid, team, removed, added, pregame=True)
+                notes.append(self.reproj.last_status)
+        if notes:
+            spec.meta["minutes_reprojection"] = "; ".join(dict.fromkeys(notes))
         usage_tradeoff(spec, [expected_shares(base.home), expected_shares(base.away)])
         return spec
 

@@ -28,6 +28,7 @@ import os
 import re
 import time
 import urllib.error
+import zlib
 import urllib.request
 from pathlib import Path
 from typing import Callable
@@ -104,7 +105,7 @@ def _get_json(url: str, timeout: float = 60.0, retries: int = 3) -> dict:
             if _TUNNEL_REFUSED.search(str(e.reason)):
                 raise AccessDenied(f"{url}: a proxy refused the connection ({e.reason}; not retried)") from e
             last = e
-        except (OSError, EOFError, ValueError, http.client.HTTPException) as e:
+        except (OSError, EOFError, ValueError, zlib.error, http.client.HTTPException) as e:
             # timeouts, connections cut off mid-transfer, TLS errors, truncated or corrupt bodies
             last = e
         time.sleep(2 ** (attempt + 1))
@@ -173,6 +174,7 @@ def fetch_live(season: str = LIVE_SEASON, refetch_hours: float = 36.0, pause_s: 
                 pdoc = _get_json(url)
             except urllib.error.HTTPError as e:        # e.g. 404: not published yet - try again next time
                 failed[key] = f"HTTP {e.code}"
+                in_a_row = 0                           # the server answered: not a network failure
                 continue
             except FetchError as e:                    # network trouble or server errors after retries
                 failed[key] = str(e)

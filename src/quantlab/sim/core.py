@@ -81,7 +81,7 @@ def _period_end(per):
 
 
 @njit(cache=True)
-def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, cap, q, cumfrac, dfac,
+def _game(rates, exists, p_play, plan, min_sd, starter, rotation, boost, usage_mult, cap, q, cumfrac, dfac,
           garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off, prm, P,
           stats, secs, score, team_reb, team_tov, poss, hist, marks):
     """Simulate one game in place (stats/secs/score/... are this game's output slices).
@@ -93,19 +93,21 @@ def _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, ca
     for t in range(2):
         tot = 0.0
         # a questionable rotation player (p_play < 1: unplayed games, scenarios) who sits leaves minutes that teams
-        # give partly to the deep bench: fringe participation rises so that a share P_FRINGE_TAKE of his planned
-        # minutes goes to fringe players (rotation players are listed first; nothing changes when nobody sits)
-        room = 0.0
+        # give partly to the deep bench: that night the participation of the fringe players who may be used
+        # (``boost``: not set by the user, p_play > 0) is scaled up in proportion to their expected minutes, so the
+        # next men up absorb most of it, until P_FRINGE_TAKE x his planned minutes is added in expectation (rotation
+        # players are listed first; nothing changes - not even the random numbers - when nobody sits)
+        fexp = 0.0
         for i in range(P):
-            if exists[t, i] and not rotation[t, i]:
-                room += (1.0 - p_play[t, i]) * plan[t, i]
+            if exists[t, i] and boost[t, i] > 0.0:
+                fexp += p_play[t, i] * plan[t, i]
         vac = 0.0
         for i in range(P):
             if not exists[t, i]:
                 continue
             p = p_play[t, i]
-            if vac > 0.0 and room > 0.0 and not rotation[t, i]:
-                p += (1.0 - p) * min(prm[P_FRINGE_TAKE] * vac / room, 1.0)
+            if vac > 0.0 and fexp > 0.0 and boost[t, i] > 0.0:
+                p = min(p * (1.0 + prm[P_FRINGE_TAKE] * vac / fexp), 1.0)
             if np.random.random() >= p:
                 if rotation[t, i] and p_play[t, i] > 0.0:
                     vac += plan[t, i]
@@ -606,7 +608,7 @@ def _rebound(rates, dfac, zeta, lineup, o, d, prm, stats, team_reb, w5b):
 
 
 @njit(cache=True, parallel=True)
-def simulate(n, n_chunks, seed, rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, cap, q,
+def simulate(n, n_chunks, seed, rates, exists, p_play, plan, min_sd, starter, rotation, boost, usage_mult, cap, q,
              cumfrac, dfac, garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off, prm, P, track_lineups):
     stats = np.zeros((n, 2, P, N_STATS), dtype=np.int16)
     secs = np.zeros((n, 2, P), dtype=np.float32)
@@ -639,7 +641,7 @@ def simulate(n, n_chunks, seed, rates, exists, p_play, plan, min_sd, starter, ro
             tt[:] = 0
             ps[:] = 0
             mk[:] = 0
-            per = _game(rates, exists, p_play, plan, min_sd, starter, rotation, usage_mult, cap, q, cumfrac, dfac,
+            per = _game(rates, exists, p_play, plan, min_sd, starter, rotation, boost, usage_mult, cap, q, cumfrac, dfac,
                         garbage, mb_edges, p_int, late_dur, late3, heave_fg, late_off, prm, P, sstat, sc64, sc_, tr,
                         tt, ps, hc, mk)
             for k in range(5):

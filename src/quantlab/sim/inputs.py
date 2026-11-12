@@ -107,7 +107,10 @@ class InputStore:
         gid = int(game_id)
         g = self.game_row(gid)
         home, away = int(g["home_team_id"]), int(g["away_team_id"])
-        if home <= 0 or away <= 0:
+        status = str(g.get("status", "") or "")
+        if status == "postponed":
+            return "postponed (no new date yet)"
+        if home <= 0 or away <= 0 or status == "tbd":
             return "the teams are not known yet"
         if gid not in self.tp.index:                    # the team model covers every game in the horizon
             return "no pregame inputs yet (beyond the projection horizon: run `quantlab live-update` closer to the date)"
@@ -282,6 +285,11 @@ def pregame_team_spec(store: InputStore, game_id: int, team_id: int, overrides: 
     """
     ov = overrides or {}
     out, forced, pset = set(ov.get("out", ())), set(ov.get("available", ())), dict(ov.get("p_play", {}))
+    placed = {int(k): int(v) for k, v in (ov.get("teams") or {}).items()}
+    # announced starters are available rotation players of this team, whatever the pregame rules presumed
+    want = [int(x) for x in (ov.get("starters") or {}).get(int(team_id), []) if int(x) not in out]
+    forced = forced | set(want)
+    placed.update({pid: int(team_id) for pid in want})
     g = store.game_row(game_id)
     date = g["game_date"]
     f = store.by_game.get(game_id)
@@ -297,7 +305,7 @@ def pregame_team_spec(store: InputStore, game_id: int, team_id: int, overrides: 
     rot_rows, fringe_rows, presumed_out = [], [], []
     for r in f.itertuples(index=False):
         pid = int(r.person_id)
-        if pid in out:
+        if pid in out or placed.get(pid, int(team_id)) != int(team_id):    # out, or moved to another team
             continue
         rr = rates.loc[pid] if rates is not None and pid in rates.index else store.latest_rates(pid, date)
         if rr is None:
@@ -325,9 +333,7 @@ def pregame_team_spec(store: InputStore, game_id: int, team_id: int, overrides: 
     # 'available' players without a row in this game (outside the 25-day pool: a return from a long absence, a
     # player who has not played for his new team yet): their latest rates and minutes, on the team they last played
     # for or the one the report gives (overrides['teams'])
-    all_rows = store.by_game.get(game_id)
-    have = set(all_rows["person_id"].astype(int)) if all_rows is not None else set()
-    placed = {int(k): int(v) for k, v in (ov.get("teams") or {}).items()}
+    have = set(f["person_id"].astype(int))
     for pid in sorted(forced - have - out):
         if placed.get(pid, store.last_team_before(pid, date)) != int(team_id):
             continue
@@ -337,7 +343,6 @@ def pregame_team_spec(store: InputStore, game_id: int, team_id: int, overrides: 
         m, start_rate = store.latest_minutes(pid, date)
         rot_rows.append((pid, rr, m, float(pset.get(pid, 1.0)), start_rate))
     # starters
-    want = [int(x) for x in (ov.get("starters") or {}).get(int(team_id), [])]
     avail_rot = {pid for pid, *_ in rot_rows}
     if want:
         five, source = [p for p in want if p in avail_rot][:5], "user"
@@ -350,8 +355,6 @@ def pregame_team_spec(store: InputStore, game_id: int, team_id: int, overrides: 
     players = []
     for pid, rr, m, p, _ in sorted(rot_rows, key=lambda x: -x[2]):
         st = pid in five
-        if st and source == "user" and pid not in pset:
-            p = 1.0                                    # an announced starter plays
         players.append(PlayerSpec(pid, store.names.get(pid, str(pid)), _rates_dict(rr), min_mean=m,
                                   min_sd=minutes_sd(m, st), p_play=p, starter=st, rotation=True))
     for pid, rr, m, sh, cw in sorted(fringe_rows, key=lambda x: -x[3] * x[2]):
@@ -360,7 +363,7 @@ def pregame_team_spec(store: InputStore, game_id: int, team_id: int, overrides: 
         cond = m if np.isfinite(m) and m > 0 else max(cw, 1.0)
         players.append(PlayerSpec(pid, store.names.get(pid, str(pid)), _rates_dict(rr),
                                   min_mean=max(sh * cond, 0.3), min_sd=3.0, p_play=sh, starter=False,
-                                  rotation=False))
+                                  rotation=False, locked=pid in pset))     # a user-set P(play) is kept as typed
     players = players[:max_players]
     tf = store.tf.loc[(game_id, team_id)] if (game_id, team_id) in store.tf.index else None
     dfac = {k: float(tf[f"def_{k}"]) for k in DEF_FACTORS} if tf is not None else {}

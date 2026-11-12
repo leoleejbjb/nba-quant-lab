@@ -170,12 +170,14 @@ games); overtime closers. Overtime is played until the tie is broken.
 more often - their participation probability is scaled, their minutes-when-playing are not (inflating those instead
 biased them by +4.9 minutes). The scaling is continuous: a deeper projected rotation means less fringe
 participation, down to a floor of 3% per fringe player (`p_min`). The budget is drawn up for every available rotation player playing; when a questionable
-rotation player (participation < 1: an unplayed game's availability, or a scenario setting) sits, a quarter of his
-planned minutes goes to the deep bench - that night the fringe players' participation rises until their expected extra
-minutes equal 25% of his (`fringe_take`; on 2021-24, fringe minutes = 2.4 + 0.255 x the rotation minutes vacated, by
-season 0.23-0.30) - and the kernel's per-game 240-minute normalisation gives the rest to the players who do play.
-Nothing changes when nobody sits, so the backtests, where every rotation player is known to play, are unaffected
-(identical random numbers). Players whose minutes or participation were set in a scenario are never rescaled. Short
+rotation player (participation < 1: an unplayed game's availability, or a scenario setting) sits, the deep bench gets
+its share of his minutes: that night the participation of the fringe players who may be used (not set by the user,
+participation > 0) is scaled up in proportion to their expected minutes, so the next men up absorb most of it, and the
+kernel's per-game 240-minute normalisation gives the rest to the players who do play. The strength (`fringe_take` =
+0.15) was chosen on 2023-24 pregame specs so that the simulated slope of fringe minutes on the sitting players' planned
+minutes (0.26) matches the data - on 2021-24, fringe minutes = 2.4 + 0.255 x the rotation minutes vacated (by season
+0.23-0.30) - against 0.04 from the normalisation alone. Nothing changes when nobody sits, so the backtests, where every
+rotation player is known to play, are unaffected (identical random numbers). Players whose minutes or participation were set in a scenario are never rescaled. Short
 pilot runs (in which every available rotation player plays, so targets and simulated means are on the same basis)
 then adjust each player's planned minutes so that simulated mean minutes equal the projection (which already includes
 average blowout effects).
@@ -295,9 +297,9 @@ the schedule's rest days and back-to-backs; one feature row per candidate player
 appeared for it in the previous 25 days and not for another team since (the fringe-candidate rule of section 10,
 applied to everyone); EB rates and style factors as of the last finished game. Baselines are updated only by played
 games, so an unplayed game changes no one's history; its rows are recomputed by every update. A game several days
-ahead is computed as of its team's next unplayed game (`features.asof.info_dates`): nothing is known about the games
-in between, so they must not count as games the player sat out (days since he played, the decay of his history, the
-pool's 25-day window). A team that has not played yet this season has no pool, so its games are projected from its
+ahead is computed as of its team's next unplayed game after its last finished one - a game in progress or a final not
+built yet included (`features.asof.info_dates`): nothing is known about the games in between, so they must not count as
+games the player sat out (days since he played, the decay of his history, the pool's 25-day window). A team that has not played yet this season has no pool, so its games are projected from its
 first game on (the slate says so).
 
 **Information set** (`sim.inputs.pregame_team_spec`). The backtest's two pieces of same-day information do not exist
@@ -315,14 +317,15 @@ yet, so each is projected:
   | Player-games | 22,461 | 1,878 | 886 | 1,012 | 1,205 | 216 |
 
   Fringe candidates play with their share of the team's recent games, as in the backtest. In each simulated game a
-  player drawn as not playing sits; a quarter of his minutes goes to the deep bench and the rest to the players who
-  play (section 6).
+  player drawn as not playing sits; about a quarter of his minutes goes to the deep bench, as in 2021-24, and the rest
+  to the players who play (section 6).
 * **The injury report** is the user's: the Slate page's injury report, or `data/live_overrides.json`, e.g.
   `{"out": [1628369], "available": [1630532], "p_play": {"1629029": 0.5}, "starters": {"1610612738": [five ids]},
   "teams": {"1630532": 1610612753}}`, applies to every unplayed game. An `out` player is removed; an `available`
   player plays with probability 1 (or his `p_play`) - also one outside the 25-day pool, back from a long absence,
-  who is added from his latest rates and minutes on the team he last played for (or the one in `teams`, e.g. after a
-  trade). The report is applied to the default pregame roster the way a scenario is (section 8): whenever it removes a
+  who is added from his latest rates and minutes on the team he last played for; `teams` moves a player to the team
+  it names (after a trade: off his old team's roster, onto the new one's). A `p_play` the report sets for a deep-bench
+  player is used as typed. The report is applied to the default pregame roster the way a scenario is (section 8): whenever it removes a
   player the pregame context counted as available, or brings back one it counted as absent, his teammates' minutes
   are re-projected (the lineup-blind per-season model with the availability features recomputed) and their shot
   efficiency follows their new share of the plays (the usage-efficiency tradeoff), while the environment shift stays
@@ -332,8 +335,9 @@ yet, so each is projected:
   read is ignored with a warning.
 * **Starters.** The starting five is announced about 30 minutes before tip-off, so it is projected: the team's five
   in its last game, among the available rotation players, with vacancies filled by start rate (decayed, 20-day
-  half-life) and then by projected minutes. The Scenario lab, or `starters` in `data/live_overrides.json`, sets the announced five
-  (they play; minutes are not re-projected for it).
+  half-life) and then by projected minutes. `starters` in `data/live_overrides.json` sets the announced five: they
+  play, as rotation players, even if the rules had presumed one out or kept him on the deep bench (a returning one
+  re-projects his teammates' minutes, like any return); the Scenario lab sets a five among the projected roster.
 * **Minutes** come from the lineup-blind model (section 4), conditional on playing; the team level (pace, efficiency,
   the blend) is unchanged.
 
@@ -346,25 +350,29 @@ who started). Per player-game of the players who appeared (1,096 in both):
 
 | MAE | MIN | PTS | REB | AST | 3PM | STL | BLK | TOV | PRA |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Pregame (rehearsal) | 4.921 | 4.560 | 1.870 | 1.373 | 0.925 | 0.716 | 0.522 | 0.891 | 5.934 |
+| Pregame (rehearsal) | 4.966 | 4.582 | 1.885 | 1.374 | 0.927 | 0.719 | 0.524 | 0.894 | 5.978 |
 | Backtest (appearances and starters known) | 4.102 | 4.329 | 1.793 | 1.362 | 0.915 | 0.708 | 0.523 | 0.883 | 5.489 |
 
-* **Minutes are the gap** (+20%; points +5%, PRA +8%, the other statistics within -0.3% to +4%). Projected minutes
-  run 0.36 high on average (backtest 0.19): +0.42 for the players who started (backtest +0.47) and +0.31 for the
-  bench (-0.07); by the lineup-blind rule, rotation players are 0.7 minutes high when they play and fringe players
-  2.0 low (points +0.16 per player-game, backtest +0.06). Two corrections made during the review produced these
-  numbers: games several days ahead computed as of the team's next game (above), and the deep bench's share of a
-  questionable player's minutes (section 6); before them, minutes MAE was 5.153, points 4.575 and the bias of the
-  starters' minutes +1.03.
+* **Minutes are the gap** (+21%; points +6%, PRA +9%, the other statistics 0% to +5%). Projected minutes run 0.59
+  high on average (backtest 0.19): +0.69 for the players who started (backtest +0.47) and +0.50 for the bench
+  (-0.07); by the lineup-blind rule, rotation players are 0.9 minutes high when they play (points +0.25 per
+  player-game, backtest +0.06). Two corrections made during the review produced these numbers: games several days
+  ahead computed as of the team's next game (above), and the deep bench's share of a questionable player's minutes
+  (section 6); before them, minutes MAE was 5.153, points 4.575 and the bias of the starters' minutes +1.03.
+* **The deep bench**: its minutes are about right (14.9 per team-game simulated against 14.0), but it appears too
+  often - 58% of the projected deep-bench players' simulated games against 43% in reality (41% without the boost of
+  section 6) - with fewer minutes each: real teams give a missing player's minutes to the bench mostly as longer
+  stints for those who play, the simulator as more of them playing. P(play) for deep-bench players is therefore
+  overstated in pregame projections.
 * **Starters**: 4.0 of the 5 projected starters started, on average.
 * **Availability**: 16.0% of the projected rotation players did not appear, against 14.6% implied by their
   appearance probabilities (mean 85.4%). 56 of the 1,152 player-games (4.9%, 3.8% of the minutes) were not projected:
   25 by players presumed out after three or more missed games who returned, 31 by players not in the pool (signings,
   call-ups, players traded in before their first game for the team, returns after more than 25 days).
-* **Team level**: spread RMSE 14.77 (backtest simulation 14.79, team model 14.81) and total RMSE 18.50 (18.61, 18.49) -
+* **Team level**: spread RMSE 14.84 (backtest simulation 14.79, team model 14.81) and total RMSE 18.49 (18.61, 18.49) -
   indistinguishable on 53 games.
-* **Days ahead**: within the week there is no clear trend with the days ahead (points MAE by day 4.29 - 5.14, minutes
-  4.37 - 5.30, in no order; the slates differ more than a few days of staleness matter). Updating daily still helps:
+* **Days ahead**: within the week there is no clear trend with the days ahead (points MAE by day 4.31 - 5.19, minutes
+  4.38 - 5.41, in no order; the slates differ more than a few days of staleness matter). Updating daily still helps:
   the streaks and the last starting five change with every game.
 
 The backtest numbers in REPORT are therefore an optimistic bound for a real slate; entering the injury report and the
