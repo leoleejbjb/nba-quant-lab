@@ -329,7 +329,8 @@ def fetch_mirror(season: str, manifest: dict, log: Callable[[str], None] = print
         log(f"[live] the mirror ({MIRROR_REPO}) has not published {season} yet - it usually adds a season in "
             "November and then updates it every few weeks; nothing new to build")
         return {"mirror": "not published yet", "downloaded": 0, "games_in_mirror": 0, "failed": {}}
-    url = urls[key]
+    # the list gives github.com/<repo>/raw/<branch>/<file>; the raw host serves it directly (no redirect), with an ETag
+    url = re.sub(r"^https://github\.com/([^/]+/[^/]+)/raw/", r"https://raw.githubusercontent.com/\1/", urls[key])
     headers = {"If-None-Match": m["etag"]} if m.get("etag") and path.exists() else {}
     log(f"[live] finished games <- {url}")
     body, info = _get(url, headers, timeout=300)
@@ -341,9 +342,9 @@ def fetch_mirror(season: str, manifest: dict, log: Callable[[str], None] = print
         tmp = path.with_suffix(".tmp")
         tmp.write_bytes(body)
         os.replace(tmp, path)
+        hdr = {k.lower(): v for k, v in info.items()}
         m.update({"url": url, "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body), "fetched_at": stamp,
-                  "etag": info.get("ETag") or info.get("Etag"), "last_modified": info.get("Last-Modified"),
-                  "license": LIC_MIRROR})
+                  "etag": hdr.get("etag"), "last_modified": hdr.get("last-modified"), "license": LIC_MIRROR})
     if not path.exists():
         return {"mirror": "unavailable", "downloaded": 0, "games_in_mirror": 0, "failed": {}}
     with tarfile.open(path, "r:xz") as t:
