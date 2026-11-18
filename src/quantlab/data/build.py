@@ -142,7 +142,9 @@ def live_season_inputs(label: str, log: Callable[[str], None] = print) -> tuple[
             continue
         docs.append(doc)
         final.add(int(gid))
+    by_file = sorted(final - set(sched.loc[sched["status"] == "final", "game_id"].astype(int)))
     sched.loc[sched["game_id"].isin(final), "status"] = "final"
+    sched.attrs["final_by_file"] = by_file      # the saved schedule's row of such a game may be stale (date, teams)
     raw = read_live_pbp(docs, Season(label).game_prefix)
     if missing or incomplete:
         log(f"[build {label}] final games without a usable play-by-play file (not built): {len(missing)} missing, "
@@ -183,6 +185,11 @@ def build_season(label: str, *, workers: int = 4, log: Callable[[str], None] = p
     if sched is not None:          # live season: the schedule is the reference (the vote / -6 h rules are checks)
         ref = sched[["game_id", "home_team_id", "game_date", "home_score", "away_score"]].rename(
             columns={"home_team_id": "ref_home_team_id", "game_date": "ref_date"})
+        # no reference where the row cannot be trusted: teams not known yet (a Cup placeholder), or a game the saved
+        # copy did not show as final (it may predate a change of date) - the play-by-play's own teams and date apply
+        stale = ref["game_id"].isin(set(sched.attrs.get("final_by_file", [])))
+        ref["ref_home_team_id"] = ref["ref_home_team_id"].where((ref["ref_home_team_id"] > 0) & ~stale)
+        ref.loc[stale, "ref_date"] = pd.NaT
         games = _apply_reference(games, ref)
         sc = games[["game_id", "final_home", "final_away"]].merge(ref, on="game_id", how="left")
         games["score_matches_schedule"] = (sc["home_score"].isna() |       # no score to check against yet
@@ -263,9 +270,25 @@ def build_season(label: str, *, workers: int = 4, log: Callable[[str], None] = p
     q = quality(label, games, stints, players, starters, contra, compare, time.perf_counter() - t0)
     if sched is not None:
         built = set(games["game_id"].astype(int))
+        fbf = set(sched.attrs.get("final_by_file", [])) & built
+        if fbf:                    # the play-by-play is the record of a game the saved copy did not show as final
+            gi = games.set_index("game_id")
+            m = sched["game_id"].isin(fbf)
+            ids = sched.loc[m, "game_id"]
+            for col, src in (("home_team_id", "home_team_id"), ("away_team_id", "away_team_id"),
+                             ("home_team", "home_team"), ("away_team", "away_team"), ("game_date", "game_date"),
+                             ("home_score", "final_home"), ("away_score", "final_away")):
+                sched.loc[m, col] = ids.map(gi[src]).to_numpy()
         sched = sched.assign(built=sched["game_id"].isin(built))
         _write(sched, pd_dir / "schedule.parquet")
-        q["live"] = {"source": "cdn.nba.com liveData (fetched by quantlab live-update)",
+        man_p = PATHS.live_raw(label) / "manifest.json"
+        man = json.loads(man_p.read_text(encoding="utf-8")).get("games", {}) if man_p.exists() else {}
+        srcs = pd.Series([man.get(str(int(g)), {}).get("source", "cdn") for g in built]).value_counts()
+        q["live"] = {"source": "cdn.nba.com liveData" + (" - from the CDN and the open mirror shufinskiy/nba_data"
+                                                          if len(srcs) > 1 else
+                                                          " via the open mirror shufinskiy/nba_data"
+                                                          if "mirror" in srcs else " (fetched by quantlab live-update)"),
+                     "sources": {k: int(v) for k, v in srcs.items()},
                      "scheduled_games": int(len(sched)),
                      "final_in_schedule": int((sched["status"] == "final").sum()),
                      "built": int(sched["built"].sum()),

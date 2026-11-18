@@ -67,10 +67,17 @@ with st.sidebar:
                    "methods). The actual results are shown for comparison.")
     ls = state.live_status()
     if ls and LIVE:
-        src = (ls.get("fetch") or {}).get("source")
+        fetch = ls.get("fetch") or {}
+        mirror = str(fetch.get("mirror") or "")
         line = (f"Current season data updated {str(ls.get('updated_at', ''))[:16].replace('T', ' ')} UTC, finished "
-                f"games through {ls.get('last_game_date') or '-'}{' (open mirror)' if src == 'mirror' else ''}.")
-        if ls.get("final_not_built"):
+                f"games through {ls.get('last_game_date') or '-'}"
+                f"{' (open mirror)' if 'mirror' in str(fetch.get('source', '')) else ''}.")
+        if not ls.get("games_built") and mirror == "not published yet":
+            line += (" The open mirror has not published the season yet, so nothing can be projected: run "
+                     "live-update again in a few days.")
+        elif mirror.startswith("unavailable"):
+            line += " The open mirror could not be reached at the last update."
+        if ls.get("final_not_built") and ls.get("games_built"):
             line += (f" {ls['final_not_built']} finished games since (through {ls.get('last_final_in_schedule')}) are "
                      "not in the data yet: the projections do not know them - enter the injury report for changes.")
         st.caption(line)

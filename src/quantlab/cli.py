@@ -290,7 +290,10 @@ def cmd_live_update(a) -> None:
         except FetchError as e:
             raise SystemExit(f"[live] could not download: {e}\nCheck the internet connection and run "
                              "`quantlab live-update` again, or rebuild from the files already fetched with "
-                             "--skip-fetch.") from None
+                             "--skip-fetch; if cdn.nba.com is blocked on this network, save the schedule from your "
+                             "browser and use --source mirror.") from None
+        except RuntimeError as e:
+            raise SystemExit(f"[live] {e}") from None
     q = build_season(LIVE_SEASON, workers=a.workers)
     build_database()
     build_features()
@@ -325,7 +328,9 @@ def cmd_live_update(a) -> None:
               "season (last season it came on Nov 13, then every few weeks); run live-update again in a few days")
     elif not status["games_built"]:
         print(f"[live] {LIVE_SEASON}: no finished games yet - a team's games are projected from its first game on")
-    if status.get("final_not_built"):
+    if fetched and str(fetched.get("mirror", "")).startswith("unavailable"):
+        print("[live] note: the open mirror could not be reached - the projections use the games already on disk")
+    if status.get("final_not_built") and status["games_built"]:
         print(f"[live] {status['final_not_built']} finished games (through {status['last_final_in_schedule']}) are not in "
               f"the data yet: the projections use the games through {status['last_game_date'] or '-'} - enter the "
               "injury report for anything that changed since")

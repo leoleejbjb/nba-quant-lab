@@ -7,9 +7,8 @@ action) before it is kept, stored gzip-compressed under ``data/raw/live/<season>
 fetched again for a while after the game to pick up the league's post-game stat corrections.
 
 Like every download in this project, requests identify themselves honestly (``download.USER_AGENT``). An access refusal
-(HTTP 401/403/407/451 from the CDN, or a proxy refusing the connection) stops the fetch: it is reported and never
-retried under another identity. cdn.nba.com refuses some cloud machines; run ``quantlab live-update`` on your own
-computer. Other failures of a game file (not published yet, a dropped connection, a server error after retries) are
+(HTTP 401/403/407/451 from the CDN, or a proxy refusing the connection) is reported and never retried under another
+identity: with ``source="cdn"`` it stops the fetch, with ``source="auto"`` the fallback below takes over. Other failures of a game file (not published yet, a dropped connection, a server error after retries) are
 recorded and that game is tried again on the next update; after several network failures in a row the fetch stops
 and the update goes on with the files already on disk.
 
@@ -68,28 +67,72 @@ class ScheduleNeeded(RuntimeError):
     """The CDN refused and no saved copy of the schedule was found: the message says how to save one."""
 
 
-def schedule_help(season: str) -> str:
-    return (f"cdn.nba.com refused this machine, so the {season} schedule has to come from your browser: open "
-            f"{SCHEDULE_URL} and save the page (Ctrl+S) as {SAVED_SCHEDULE} - into your Downloads folder or "
-            f"{PATHS.live_raw(season)}, where live-update looks for it - then run it again (or pass --schedule <file>). "
-            "Save it again whenever you want newer results and game statuses. If the browser shows 'Access Denied' too, "
-            "the refusal is about your network (a VPN, the region, security software): try another network.")
+def schedule_help(season: str, reason: str = "cdn.nba.com refused this machine") -> str:
+    where = " or ".join(str(d) for d in schedule_folders(season))
+    return (f"{reason}, so the {season} schedule has to come from your browser: open {SCHEDULE_URL}, reload it (F5) "
+            f"and save it (Ctrl+S) as {SAVED_SCHEDULE} into {where} - where live-update looks for it - or pass "
+            "--schedule <file>, then run live-update again. Save it again before each slate: it holds the game "
+            "statuses. If the browser shows 'Access Denied' too, the refusal is about your network (a VPN, the "
+            "region, security software): try another network.")
 
 
-def saved_schedule_file(season: str, given: str | Path | None = None) -> Path | None:
-    """The browser-saved schedule to use: ``given``, else the newest of the live folder's copy and the Downloads
-    folder's ``scheduleLeagueV2*.json``."""
+def _downloads_dir() -> Path:
+    """The user's Downloads folder - on Windows the Downloads known folder, which may have been moved."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class GUID(ctypes.Structure):
+                _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD), ("Data3", wintypes.WORD),
+                            ("Data4", ctypes.c_ubyte * 8)]
+            folder = GUID(0x374DE290, 0x123F, 0x4565,                        # FOLDERID_Downloads
+                          (ctypes.c_ubyte * 8)(0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B))
+            out = ctypes.c_wchar_p()
+            if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folder), 0, None, ctypes.byref(out)) == 0:
+                path = Path(out.value)
+                ctypes.windll.ole32.CoTaskMemFree(out)
+                return path
+        except Exception:                               # any failure: the usual place
+            pass
+    return Path.home() / "Downloads"
+
+
+def schedule_folders(season: str) -> list:
+    return [PATHS.live_raw(season), _downloads_dir()]
+
+
+def _holds_season(f: Path, season: str) -> bool:
+    """Whether a saved schedule lists games of ``season`` (regular-season ids 002YYxxxxx)."""
+    try:
+        return f'"00{Season(season).game_prefix}' in f.read_text(encoding="utf-8-sig", errors="ignore")
+    except OSError:
+        return False
+
+
+def saved_schedule_file(season: str, given: str | Path | None = None, reason: str = "cdn.nba.com refused this machine"
+                        ) -> Path | None:
+    """The browser-saved schedule to use: ``given``, else the newest copy of ``season``'s schedule among the live
+    folder's ``scheduleLeagueV2.json`` and the Downloads folder's ``scheduleLeagueV2*.json`` (copies of another
+    season are skipped). None if there is none at all."""
     if given:
         path = Path(given).expanduser()
         if not path.is_file():
             raise FileNotFoundError(f"--schedule {given}: no such file")
+        if not _holds_season(path, season):
+            raise ScheduleNeeded(f"{path} holds no {season} games - it is a copy of another season's schedule; "
+                                 f"{schedule_help(season, reason)}")
         return path
-    found = [PATHS.live_raw(season) / SAVED_SCHEDULE]
-    downloads = Path.home() / "Downloads"
+    live, downloads = schedule_folders(season)
+    found = [live / SAVED_SCHEDULE]
     if downloads.is_dir():
         found += sorted(downloads.glob("scheduleLeagueV2*.json"))
     found = [f for f in found if f.is_file()]
-    return max(found, key=lambda f: f.stat().st_mtime) if found else None
+    this = [f for f in found if _holds_season(f, season)]
+    if found and not this:
+        raise ScheduleNeeded(f"the saved schedule ({', '.join(str(f) for f in found)}) holds no {season} games - it "
+                             f"is a copy of another season's; {schedule_help(season, reason)}")
+    return max(this, key=lambda f: f.stat().st_mtime) if this else None
 
 
 def schedule_path(season: str) -> Path:
@@ -200,7 +243,7 @@ def fetch_live(season: str = LIVE_SEASON, refetch_hours: float = 36.0, pause_s: 
     now = dt.datetime.now(dt.timezone.utc)
     stamp = now.isoformat(timespec="seconds")
 
-    doc, refused = None, None
+    doc, refused, reason = None, None, "--source mirror reads the schedule from a copy saved in a browser"
     if source in ("auto", "cdn"):
         log(f"[live] schedule <- {SCHEDULE_URL}")
         try:
@@ -209,38 +252,52 @@ def fetch_live(season: str = LIVE_SEASON, refetch_hours: float = 36.0, pause_s: 
         except AccessDenied as e:
             if source == "cdn":
                 raise
-            refused = str(e)
+            refused, reason = str(e), "cdn.nba.com refused this machine"
             log(f"[live] {e}\n[live] cdn.nba.com refused this machine: the schedule comes from a copy saved in a "
                 f"browser and the finished games from the open mirror ({MIRROR_REPO}); requests are never retried "
                 "under another identity")
+        except FetchError as e:                      # no answer at all (blocked or down): the same fallback, if possible
+            if source == "cdn":
+                raise
+            refused, reason = str(e), "cdn.nba.com did not answer"
+            log(f"[live] {e}\n[live] cdn.nba.com did not answer: trying a copy of the schedule saved in a browser and "
+                f"the open mirror ({MIRROR_REPO})")
     if doc is None:
-        f = saved_schedule_file(season, schedule_file)
+        f = saved_schedule_file(season, schedule_file, reason)
         if f is None:
-            raise ScheduleNeeded(schedule_help(season))
+            raise ScheduleNeeded(schedule_help(season, reason))
         try:
             doc = json.loads(f.read_text(encoding="utf-8-sig"))
         except (ValueError, UnicodeDecodeError) as e:
-            raise ScheduleNeeded(f"{f} is not the schedule JSON ({e}); {schedule_help(season)}") from None
-        saved_t = dt.datetime.fromtimestamp(f.stat().st_mtime, dt.timezone.utc)
-        saved = saved_t.isoformat(timespec="seconds")
-        sched_src = {"file": str(f), "saved_at": saved, "license": LIC_LIVE}
+            raise ScheduleNeeded(f"{f} is not the schedule JSON ({e}); {schedule_help(season, reason)}") from None
+        saved = dt.datetime.fromtimestamp(f.stat().st_mtime, dt.timezone.utc).isoformat(timespec="seconds")
+        made = pd.to_datetime((doc.get("meta") or {}).get("time"), utc=True, errors="coerce") \
+            if isinstance(doc, dict) else pd.NaT
+        sched_src = {"file": str(f), "saved_at": saved, "generated_at": None if pd.isna(made) else str(made),
+                     "license": LIC_LIVE}
         log(f"[live] schedule <- {f} (saved {saved[:16].replace('T', ' ')} UTC)")
-        if now - saved_t > dt.timedelta(hours=36):
-            log(f"[live] note: the saved schedule is {(now - saved_t).days} days old - its game statuses and the "
-                "projection window follow it: save it again from your browser for today's slate")
+        age = now - (made.to_pydatetime() if pd.notna(made) else dt.datetime.fromisoformat(saved))
+        if age > dt.timedelta(hours=36):            # the page's own time: a re-saved old page is still old
+            log(f"[live] note: this copy of the schedule is {age.days} days old - its game statuses and the projection "
+                "window follow it: reload the page (F5) and save it again for today's slate")
     try:
         sched = read_schedule(doc, season, Season(season).game_prefix)
     except ValueError as e:
-        raise ScheduleNeeded(f"the schedule is not in the expected format ({e}); {schedule_help(season)}") from None
+        if "file" in sched_src:
+            raise ScheduleNeeded(f"{sched_src['file']} is not the schedule ({e}); {schedule_help(season, reason)}") \
+                from None
+        raise FetchError(f"the schedule from cdn.nba.com is not in the expected format ({e}) - the feed may have "
+                         "changed") from None
     if sched.empty:
-        raise RuntimeError(f"the schedule has no {season} regular-season games "
-                           "(has the season changed? set QUANTLAB_LIVE_SEASON)")
+        raise RuntimeError(f"the schedule has no {season} regular-season games (has the season changed? set "
+                           "QUANTLAB_LIVE_SEASON to the season being played)")
     manifest["schedule"] = {**sched_src, "sha256": write_json_gz(doc, schedule_path(season)),
                             "games": int(len(sched)),
                             "status_counts": {k: int(v) for k, v in sched["status"].value_counts().items()}}
+    tips = dict(zip(sched["game_id"].astype(int), sched["tip_utc"]))
     if refused is not None or source == "mirror":
         try:
-            out = fetch_mirror(season, manifest, log)
+            out = fetch_mirror(season, manifest, log, tips, refetch_hours)
         finally:
             _write_manifest(manifest, manifest.get("failed", {}), manifest_path)
         return {"season": season, "scheduled_games": int(len(sched)), "source": "mirror", "refused": refused,
@@ -296,7 +353,7 @@ def fetch_live(season: str = LIVE_SEASON, refetch_hours: float = 36.0, pause_s: 
         _write_manifest(manifest, failed, manifest_path)
     if refused is not None:
         try:
-            out = fetch_mirror(season, manifest, log)
+            out = fetch_mirror(season, manifest, log, tips, refetch_hours)
         finally:
             _write_manifest(manifest, manifest.get("failed", {}), manifest_path)
         return {"season": season, "scheduled_games": int(len(sched)), "source": "cdn+mirror", "refused": refused,
@@ -316,12 +373,21 @@ def mirror_path(season: str) -> Path:
     return PATHS.live_raw(season) / "mirror" / f"{mirror_key(season)}.tar.xz"
 
 
-def fetch_mirror(season: str, manifest: dict, log: Callable[[str], None] = print) -> dict:
+def fetch_mirror(season: str, manifest: dict, log: Callable[[str], None] = print, tips: dict | None = None,
+                 refetch_hours: float = 36.0) -> dict:
     """The season's finished games from the open mirror: download ``cdnnba_<year>.tar.xz`` when it changed
-    (conditional request), then write a per-game document for every complete game that is new or longer than the
-    copy on disk (a game fetched from the CDN is kept). Returns what was done."""
+    (conditional request), then write a per-game document for every complete game that is new or whose mirror rows
+    changed. A game the CDN delivered is kept, unless that copy was fetched within ``refetch_hours`` of its tip-off
+    (``tips``: game id -> tip-off time) and so may lack the post-game corrections. If the mirror cannot be reached
+    the update goes on with the games already on disk. Returns what was done."""
     key = mirror_key(season)
-    listing, _ = _get(MIRROR_LIST_URL, decode=lambda b: b.decode("utf-8"))
+    tips = tips or {}
+    try:
+        listing, _ = _get(MIRROR_LIST_URL, decode=lambda b: b.decode("utf-8"))
+    except (AccessDenied, urllib.error.HTTPError, FetchError) as e:
+        log(f"[live] the open mirror ({MIRROR_REPO}) could not be reached ({e}); the update goes on with the games "
+            "already on disk")
+        return {"mirror": f"unavailable: {e}", "downloaded": 0, "games_in_mirror": 0, "failed": {}}
     urls = dict(line.strip().split("=", 1) for line in listing.splitlines() if "=" in line)
     m = manifest.setdefault("mirror", {})
     path = mirror_path(season)
@@ -333,9 +399,16 @@ def fetch_mirror(season: str, manifest: dict, log: Callable[[str], None] = print
     url = re.sub(r"^https://github\.com/([^/]+/[^/]+)/raw/", r"https://raw.githubusercontent.com/\1/", urls[key])
     headers = {"If-None-Match": m["etag"]} if m.get("etag") and path.exists() else {}
     log(f"[live] finished games <- {url}")
-    body, info = _get(url, headers, timeout=300)
+    try:
+        body, info = _get(url, headers, timeout=300)
+    except (AccessDenied, urllib.error.HTTPError, FetchError) as e:
+        log(f"[live] the open mirror's {key} could not be downloaded ({e}); the update goes on with the games "
+            "already on disk")
+        body, info = None, {}
+        if not path.exists():
+            return {"mirror": f"unavailable: {e}", "downloaded": 0, "games_in_mirror": 0, "failed": {}}
     stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    if body is None:
+    if body is None and path.exists() and m.get("etag"):
         log(f"[live] the mirror's {key} is unchanged since {m.get('fetched_at', '?')[:10]}")
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -357,24 +430,31 @@ def fetch_mirror(season: str, manifest: dict, log: Callable[[str], None] = print
     rows = rows[(gid_col // 100_000) == prefix]
     games = manifest.setdefault("games", {})
     failed = manifest.setdefault("failed", {})
-    written, last = 0, None
+    written = 0
     for gid, g in rows.groupby("gameId"):
         k = str(int(gid))
         have = games.get(k, {})
-        if pbp_path(season, gid).exists() and have.get("complete") and (
-                have.get("source", "cdn") == "cdn" or have.get("actions", 0) >= len(g)):
-            continue
+        h = str(int(pd.util.hash_pandas_object(g.reset_index(drop=True), index=False).to_numpy().sum(dtype="uint64")))
+        if pbp_path(season, gid).exists() and have.get("complete"):
+            if have.get("source", "cdn") == "cdn":
+                tip, got = tips.get(int(gid)), pd.to_datetime(have.get("fetched_at"), utc=True, errors="coerce")
+                provisional = tip is not None and pd.notna(tip) and pd.notna(got) and \
+                    got - pd.Timestamp(tip) < pd.Timedelta(hours=refetch_hours)
+                if not provisional:
+                    continue                             # a CDN copy fetched after the correction window is kept
+            elif have.get("rows_hash") == h:
+                continue                                 # unchanged in the mirror
         doc = doc_from_mirror_rows(g)
         problems = check_pbp(doc, int(gid))
         if problems:
             failed[k] = "mirror: " + "; ".join(problems)
             continue
         games[k] = {"source": "mirror", "sha256": write_json_gz(doc, pbp_path(season, gid)), "fetched_at": stamp,
-                    "actions": int(len(g)), "complete": True}
+                    "actions": int(len(g)), "rows_hash": h, "complete": True}
         failed.pop(k, None)
         written += 1
     n = int(rows["gameId"].nunique())
-    log(f"[live] mirror: {n} finished {season} games, {written} new or longer")
+    log(f"[live] mirror: {n} finished {season} games, {written} new or changed")
     return {"mirror": m.get("url"), "games_in_mirror": n, "downloaded": written, "failed": dict(failed)}
 
 

@@ -109,7 +109,7 @@ make backtest    # simulation backtests: 2023-24 -> blend weight -> blend; 2024-
 make report      # baselines, GBM, matchup ablation, team-first model, summary, FINDINGS    (~15 min)
 make docs        # re-render README results, docs/REPORT.md and docs/report.html from the summary
 make dashboard   # http://localhost:8501
-make test        # 78 tests (the slow end-to-end rehearsal test runs with QUANTLAB_SLOW_TESTS=1)
+make test        # 82 tests (the slow end-to-end rehearsal test runs with QUANTLAB_SLOW_TESTS=1)
 ```
 
 **Current season.** After the pipeline has run once (`make data models` is enough to start; `make backtest` chooses
@@ -137,8 +137,9 @@ back to two other sources: the finished games come from the open mirror the pinn
 ([shufinskiy/nba_data](https://github.com/shufinskiy/nba_data), updated every few weeks during a season), and the
 schedule from a copy you save in your browser - open
 [scheduleLeagueV2.json](https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json), press Ctrl+S (it lands in
-your Downloads folder, where `live-update` looks; or pass `--schedule <file>`) and run `make live` again; save it again
-whenever you want the newest game statuses. The newest finished games may not be in the mirror yet: the projections
+your Downloads folder, where `live-update` looks; or name the file: `make live ARGS="--schedule <file>"`, on Windows
+`.\make.ps1 live --schedule <file>`) and run `make live` again; reload the page (F5) and save it again before each
+slate - it holds the game statuses. The newest finished games may not be in the mirror yet: the projections
 then use the games through its last update, `live-update` and the dashboard say how far behind they are, and the
 injury report covers what changed since. Until the mirror publishes the season nothing can be projected.
 
@@ -234,7 +235,7 @@ src/quantlab/
   cli.py, config.py   command line; paths, seasons and the tuning/test split
 scripts/       run_backtests.py, rehearse_live.py (the current-season rehearsal), make_report_page.py
                (docs/report.html), docs/ (README results and REPORT renderers), package.sh
-tests/         78 tests: PBP rules, leakage, simulator invariants, props, scenarios, the live feed, the rehearsal,
+tests/         82 tests: PBP rules, leakage, simulator invariants, props, scenarios, the live feed, the rehearsal,
                review regressions
 Makefile, make.ps1   pipeline targets (make on Linux/macOS, PowerShell on Windows)
 docs/          REPORT.md, METHODOLOGY.md, DATA.md, FINDINGS_DATA.md (auto-generated), screenshots

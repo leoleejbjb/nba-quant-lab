@@ -104,8 +104,9 @@ same code:
   store and the models (METHODOLOGY, section 11).
 * **Access policy**: requests identify the program honestly (the same User-Agent as every download here, a
   one-second pause after every game-file request, gzip-compressed transfers), and an access refusal (HTTP
-  401/403/407/451, or a proxy refusing the connection) stops the update: it is reported and never retried under
-  another identity. This build environment was refused ("Access Denied"), so the live path
+  401/403/407/451, or a proxy refusing the connection) is reported and never retried under another identity: with
+  `--source cdn` it stops the update, with `--source auto` (the default) the update goes on from a browser-saved
+  schedule and the open mirror (below). This build environment was refused ("Access Denied"), so the live path
   was exercised by a rehearsal instead: `scripts/rehearse_live.py` writes a finished season (2025-26) in the live
   format from the pinned mirror (games before a cutoff final, the rest scheduled; a test checks that the live reader
   reproduces the mirror's events exactly) and runs the real `quantlab live-update --skip-fetch` on it (results in

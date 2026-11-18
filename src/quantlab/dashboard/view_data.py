@@ -37,9 +37,14 @@ def render() -> None:
     if lq.exists():
         live = json.loads(lq.read_text(encoding="utf-8")).get("live", {})
         st.subheader(f"Current season ({LIVE_SEASON})")
+        src = live.get("sources", {"cdn": live.get("built", 0)})
+        how = ("Fetched from the NBA's live CDN (cdn.nba.com)" if not src.get("mirror") else
+               "Taken from the open mirror shufinskiy/nba_data (cdn.nba.com refused this computer)" if not src.get("cdn")
+               else f"Fetched from the NBA's live CDN ({src['cdn']} games) and the open mirror shufinskiy/nba_data "
+                    f"({src['mirror']} games)")
         st.markdown(
-            f"Fetched from the NBA's live CDN (cdn.nba.com) by `quantlab live-update` on this computer - the same "
-            f"play-by-play feed the pinned mirror archives, not pinned because the season is still being played. "
+            f"{how} by `quantlab live-update` on this computer - the same play-by-play feed the pinned mirror "
+            "archives, not pinned because the season is still being played. "
             f"{live.get('built', 0)} of {live.get('final_in_schedule', 0)} finished games built (through "
             f"{live.get('last_game_date', '-')}), {live.get('scheduled_games', 0)} games in the schedule. Unplayed games "
             "are projected truly pregame: no inactive list and no starting fives exist yet, so availability is "

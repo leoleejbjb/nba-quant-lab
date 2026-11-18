@@ -5,8 +5,10 @@ from __future__ import annotations
 import io
 import json
 import urllib.error
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from quantlab.config import Paths
 from quantlab.data import cdn
@@ -320,11 +322,20 @@ def test_the_newest_saved_schedule_is_used(monkeypatch, tmp_path):
     monkeypatch.setattr(cdn.Path, "home", classmethod(lambda cls: tmp_path))
     d = tmp_path / "Downloads"
     d.mkdir()
-    (d / "scheduleLeagueV2.json").write_text("{}", encoding="utf-8")
-    (d / "scheduleLeagueV2 (1).json").write_text("{}", encoding="utf-8")
+    this, last = '{"gameId": "0022600001"}', '{"gameId": "0022500001"}'
+    (d / "scheduleLeagueV2.json").write_text(this, encoding="utf-8")
+    (d / "scheduleLeagueV2 (1).json").write_text(this, encoding="utf-8")
+    (d / "scheduleLeagueV2 (2).json").write_text(last, encoding="utf-8")      # last season's copy, newest
     _os.utime(d / "scheduleLeagueV2.json", (1_000_000_000, 1_000_000_000))
-    assert cdn.saved_schedule_file("2026-27").name == "scheduleLeagueV2 (1).json"
+    assert cdn.saved_schedule_file("2026-27").name == "scheduleLeagueV2 (1).json"   # skips last season's
     assert cdn.saved_schedule_file("2026-27", d / "scheduleLeagueV2.json").name == "scheduleLeagueV2.json"
+    for f in ("scheduleLeagueV2.json", "scheduleLeagueV2 (1).json"):
+        (d / f).unlink()
+    try:                                                                     # only another season's copy
+        cdn.saved_schedule_file("2026-27")
+        raise AssertionError("expected ScheduleNeeded")
+    except cdn.ScheduleNeeded as e:
+        assert "another season" in str(e)
 
 
 def test_a_refusal_of_game_files_falls_back_to_the_mirror_for_the_rest(monkeypatch, tmp_path):
@@ -342,3 +353,95 @@ def test_a_refusal_of_game_files_falls_back_to_the_mirror_for_the_rest(monkeypat
     s = cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
     assert s["source"] == "cdn+mirror" and s["downloaded"] == 2
     assert sum("playbyplay" in u for u in seen["calls"]) == 1      # the first refusal stops the CDN requests
+
+
+def test_an_unreachable_mirror_lets_the_update_go_on(monkeypatch, tmp_path):
+    _fallback_world(monkeypatch, tmp_path)
+    inner = cdn.urllib.request.urlopen
+
+    def fake(req, timeout=None):
+        if req.full_url.endswith("cdnnba_2026.tar.xz"):
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+        return inner(req, timeout)
+    monkeypatch.setattr(cdn.urllib.request, "urlopen", fake)
+    s = cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
+    assert s["mirror"].startswith("unavailable") and "404" in s["mirror"] and s["downloaded"] == 0
+
+
+def test_a_changed_mirror_game_is_rewritten_and_a_provisional_cdn_copy_replaced(monkeypatch, tmp_path):
+    _fallback_world(monkeypatch, tmp_path)
+    s = cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
+    assert s["downloaded"] == 2
+    man_p = tmp_path / "data" / "raw" / "live" / "2026-27" / "manifest.json"
+    man = json.loads(man_p.read_text(encoding="utf-8"))
+    man["mirror"].pop("etag")                                      # serve the file again, with game 502 corrected
+    man["games"]["22600501"].update(source="cdn", fetched_at="2026-10-22T01:00:00+00:00")   # fetched 1.5 h after tip
+    man_p.write_text(json.dumps(man), encoding="utf-8")
+    corrected = _pbp(22600502)
+    corrected["game"]["actions"][1]["personId"] = 99                # same number of actions, a stat reassigned
+    tar = _mirror_tar([_pbp(22600501), corrected, _pbp(22600503, end=False)])
+    inner = cdn.urllib.request.urlopen
+
+    def fake(req, timeout=None):
+        if req.full_url.endswith("cdnnba_2026.tar.xz"):
+            return _Raw(tar, {"ETag": '"v2"'})
+        return inner(req, timeout)
+    monkeypatch.setattr(cdn.urllib.request, "urlopen", fake)
+    s2 = cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
+    assert s2["downloaded"] == 2                                   # 502 changed, 501's CDN copy was provisional
+    doc = cdn.read_json_gz(cdn.pbp_path("2026-27", 22600502))
+    assert doc["game"]["actions"][1]["personId"] == 99
+
+
+def test_an_unreachable_cdn_falls_back_to_a_saved_schedule(monkeypatch, tmp_path):
+    _fallback_world(monkeypatch, tmp_path)
+    inner = cdn.urllib.request.urlopen
+
+    def fake(req, timeout=None):
+        if req.full_url.startswith("https://cdn.nba.com/"):
+            raise urllib.error.URLError(TimeoutError("timed out"))
+        return inner(req, timeout)
+    monkeypatch.setattr(cdn.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(cdn.time, "sleep", lambda s: None)
+    s = cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
+    assert s["source"] == "mirror" and "timed out" in s["refused"] and s["downloaded"] == 2
+
+
+MIRROR = Path(__file__).resolve().parents[1] / "data" / "raw" / "cdnnba_2025.tar.xz"
+
+
+@pytest.mark.skipif(not MIRROR.exists(), reason="needs the pinned 2025-26 mirror file")
+def test_a_game_built_from_its_file_takes_its_teams_and_date_from_the_play_by_play(monkeypatch, tmp_path):
+    """A saved schedule older than the games: a Cup placeholder (teams 0) and a game shown on an old date - built
+    from their play-by-play files, with the files' teams and dates."""
+    import tarfile
+    from quantlab import config
+    from quantlab.data import build
+    with tarfile.open(MIRROR, "r:xz") as t:
+        rows = pd.read_csv(io.BufferedReader(t.extractfile("cdnnba_2025.csv")), low_memory=False, nrows=40000)
+    gids = sorted(rows["gameId"].unique())[:2]
+    paths = Paths(root=tmp_path / "data")
+    for mod in (cdn, build):
+        monkeypatch.setattr(mod, "PATHS", paths)
+    monkeypatch.setattr(config, "LIVE_SEASON", "2025-26")
+    true = {}
+    for gid in gids:
+        doc = cdn.doc_from_mirror_rows(rows[rows["gameId"] == gid])
+        cdn.write_json_gz(doc, cdn.pbp_path("2025-26", gid))
+    games = pd.read_parquet(Path(__file__).resolve().parents[1] / "data" / "processed" / "2025-26" / "games.parquet")
+    g = games.set_index("game_id").loc[gids]
+    entries = []
+    for k, (gid, r) in enumerate(g.iterrows()):
+        e = _game(int(gid), 1, "2025-11-26T00:30:00Z", home=int(r.home_team_id), away=int(r.away_team_id))
+        if k == 0:
+            e["homeTeam"]["teamId"] = e["awayTeam"]["teamId"] = 0      # a Cup placeholder in the saved copy
+        entries.append(e)
+        true[int(gid)] = (int(r.home_team_id), str(pd.Timestamp(r.game_date).date()))
+    cdn.write_json_gz({"leagueSchedule": {"gameDates": [{"gameDate": "x", "games": entries}]}},
+                      cdn.schedule_path("2025-26"))
+    build.build_season("2025-26", workers=1, log=lambda m: None)
+    out = pd.read_parquet(paths.processed("2025-26") / "games.parquet").set_index("game_id")
+    sch = pd.read_parquet(paths.processed("2025-26") / "schedule.parquet").set_index("game_id")
+    for gid, (home, date) in true.items():
+        assert int(out.loc[gid, "home_team_id"]) == home and str(pd.Timestamp(out.loc[gid, "game_date"]).date()) == date
+        assert int(sch.loc[gid, "home_team_id"]) == home and sch.loc[gid, "status"] == "final"
