@@ -14,7 +14,8 @@
       test              run the test suite
       dashboard         start the dashboard at http://localhost:8501 (Ctrl+C to stop)
       all               data, models, backtest, report
-      live              current season: fetch new games from cdn.nba.com, rebuild it, refresh the models
+      live              current season: new games from cdn.nba.com (or the open mirror and a schedule saved
+                        in your browser when it refuses; --schedule <file>), rebuild it, refresh the models
       quantlab <args>   run any quantlab command, e.g.  .\make.ps1 quantlab project --game-id 22501132
       package           git bundle + source zip in dist\
       clean-data        delete the downloaded and generated data (asks first)

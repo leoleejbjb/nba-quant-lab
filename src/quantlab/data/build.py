@@ -124,20 +124,25 @@ def _apply_reference(games: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
 
 
 def live_season_inputs(label: str, log: Callable[[str], None] = print) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Raw play-by-play of the live season's finished games (complete files only) and its schedule."""
+    """Raw play-by-play of the live season's finished games (complete files only) and its schedule. A complete file
+    makes its game final even when the schedule (a copy saved earlier in a browser) does not say so yet."""
     from .cdn import check_pbp, load_schedule, pbp_path, read_json_gz
     sched = load_schedule(label)
-    docs, missing, incomplete = [], [], []
-    for gid in sched.loc[sched["status"] == "final", "game_id"].to_numpy():
+    docs, missing, incomplete, final = [], [], [], set()
+    for gid, status in zip(sched["game_id"].to_numpy(), sched["status"].to_numpy()):
         path = pbp_path(label, gid)
         if not path.exists():
-            missing.append(int(gid))
+            if status == "final":
+                missing.append(int(gid))
             continue
         doc = read_json_gz(path)
         if check_pbp(doc, int(gid)):
-            incomplete.append(int(gid))
+            if status == "final":
+                incomplete.append(int(gid))
             continue
         docs.append(doc)
+        final.add(int(gid))
+    sched.loc[sched["game_id"].isin(final), "status"] = "final"
     raw = read_live_pbp(docs, Season(label).game_prefix)
     if missing or incomplete:
         log(f"[build {label}] final games without a usable play-by-play file (not built): {len(missing)} missing, "
@@ -180,8 +185,9 @@ def build_season(label: str, *, workers: int = 4, log: Callable[[str], None] = p
             columns={"home_team_id": "ref_home_team_id", "game_date": "ref_date"})
         games = _apply_reference(games, ref)
         sc = games[["game_id", "final_home", "final_away"]].merge(ref, on="game_id", how="left")
-        games["score_matches_schedule"] = ((sc["final_home"] == sc["home_score"]) &
-                                           (sc["final_away"] == sc["away_score"])).to_numpy()
+        games["score_matches_schedule"] = (sc["home_score"].isna() |       # no score to check against yet
+                                           ((sc["final_home"] == sc["home_score"]) &
+                                            (sc["final_away"] == sc["away_score"]))).to_numpy()
     bad = games["home_team_id"].isna() | games["away_team_id"].isna()
     if bad.any():                  # fewer than two scoring teams: cannot be reconstructed
         log(f"[build {label}] {int(bad.sum())} games without two identifiable teams skipped: "

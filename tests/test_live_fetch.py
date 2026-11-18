@@ -144,7 +144,7 @@ def test_a_refusal_mid_fetch_keeps_the_manifest(monkeypatch, tmp_path):
     monkeypatch.setattr(cdn, "PATHS", Paths(root=tmp_path))
     monkeypatch.setattr(cdn.urllib.request, "urlopen", fake)
     try:
-        cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
+        cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None, source="cdn")      # CDN only: a refusal stops it
         raise AssertionError("expected AccessDenied")
     except cdn.AccessDenied:
         pass
@@ -218,3 +218,127 @@ def test_gzip_responses_are_decompressed(monkeypatch):
         return Gz({"ok": 1})
     monkeypatch.setattr(cdn.urllib.request, "urlopen", fake)
     assert cdn._get_json(cdn.SCHEDULE_URL) == {"ok": 1} and seen["accept"] == "gzip"
+
+
+# ---------------------------------------------------------------------------------------------- the mirror fallback
+class _Raw(io.BytesIO):
+    def __init__(self, body: bytes, headers=None):
+        super().__init__(body)
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def _mirror_tar(docs, key="cdnnba_2026") -> bytes:
+    import tarfile
+    from quantlab.data.events import actions_frame
+    csv = pd.concat([actions_frame(d) for d in docs], ignore_index=True).to_csv(index=False).encode("utf-8")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:xz") as t:
+        info = tarfile.TarInfo(f"{key}.csv")
+        info.size = len(csv)
+        t.addfile(info, io.BytesIO(csv))
+    return buf.getvalue()
+
+
+def _fallback_world(monkeypatch, tmp_path, listed=True):
+    """cdn.nba.com refuses; the mirror lists 2026-27 with two complete games and one cut short; a saved schedule."""
+    old = "2026-10-21T23:30:00Z"
+    sched = {"leagueSchedule": {"gameDates": [{"gameDate": "x", "games": [
+        _game(22600501, 3, old, hs=2, as_=0), _game(22600502, 1, old),      # 502: the saved copy predates its end
+        _game(22600503, 3, old, hs=2, as_=0), _game(22600504, 1, "2099-11-12T00:30:00Z")]}]}}
+    saved = tmp_path / "Downloads" / "scheduleLeagueV2.json"
+    saved.parent.mkdir(parents=True)
+    saved.write_text(json.dumps(sched), encoding="utf-8")
+    tar = _mirror_tar([_pbp(22600501), _pbp(22600502), _pbp(22600503, end=False)])
+    url = "https://example.invalid/cdnnba_2026.tar.xz"
+    seen = {"etag_sent": [], "calls": []}
+
+    def fake(req, timeout=None):
+        u = req.full_url
+        seen["calls"].append(u)
+        if u.startswith("https://cdn.nba.com/"):
+            raise urllib.error.HTTPError(u, 403, "Forbidden", {}, None)
+        if u == cdn.MIRROR_LIST_URL:
+            return _Raw(("cdnnba_2025=https://example.invalid/cdnnba_2025.tar.xz\n" +
+                         (f"cdnnba_2026={url}\n" if listed else "")).encode("utf-8"))
+        if u == url:
+            seen["etag_sent"].append(req.get_header("If-none-match"))
+            if req.get_header("If-none-match") == '"v1"':
+                raise urllib.error.HTTPError(u, 304, "Not Modified", {}, None)
+            return _Raw(tar, {"ETag": '"v1"'})
+        raise AssertionError(u)
+
+    monkeypatch.setattr(cdn, "PATHS", Paths(root=tmp_path / "data"))
+    monkeypatch.setattr(cdn.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(cdn.urllib.request, "urlopen", fake)
+    return seen
+
+
+def test_a_refusal_falls_back_to_the_mirror_and_a_saved_schedule(monkeypatch, tmp_path):
+    seen = _fallback_world(monkeypatch, tmp_path)
+    s = cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
+    assert s["source"] == "mirror" and "403" in s["refused"] and s["schedule"]["file"].endswith("scheduleLeagueV2.json")
+    assert s["games_in_mirror"] == 3 and s["downloaded"] == 2 and "game end" in s["failed"]["22600503"]
+    assert cdn.pbp_path("2026-27", 22600501).exists() and cdn.pbp_path("2026-27", 22600502).exists()
+    assert sum(u.startswith("https://cdn.nba.com/") for u in seen["calls"]) == 1      # refused once, not retried
+    man = json.loads((tmp_path / "data" / "raw" / "live" / "2026-27" / "manifest.json").read_text(encoding="utf-8"))
+    assert man["mirror"]["etag"] == '"v1"' and man["games"]["22600501"]["source"] == "mirror"
+    s2 = cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)    # unchanged mirror: a 304, nothing rewritten
+    assert seen["etag_sent"][-1] == '"v1"' and s2["downloaded"] == 0
+    # the build takes every complete game file, also one the saved schedule does not show as final yet
+    from quantlab.data import build
+    raw, sch = build.live_season_inputs("2026-27", log=lambda m: None)
+    assert set(raw["gameId"].astype(int)) == {22600501, 22600502}
+    assert sch.set_index("game_id").loc[22600502, "status"] == "final"
+    assert sch.attrs["missing_pbp"] == [22600503]               # cut short: never written, so missing
+
+
+def test_without_a_saved_schedule_the_refusal_says_how_to_save_one(monkeypatch, tmp_path):
+    _fallback_world(monkeypatch, tmp_path)
+    (tmp_path / "Downloads" / "scheduleLeagueV2.json").unlink()
+    try:
+        cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
+        raise AssertionError("expected ScheduleNeeded")
+    except cdn.ScheduleNeeded as e:
+        assert "scheduleLeagueV2.json" in str(e) and "Ctrl+S" in str(e)
+
+
+def test_the_mirror_has_not_published_the_season_yet(monkeypatch, tmp_path):
+    _fallback_world(monkeypatch, tmp_path, listed=False)
+    s = cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
+    assert s["mirror"] == "not published yet" and s["downloaded"] == 0
+
+
+def test_the_newest_saved_schedule_is_used(monkeypatch, tmp_path):
+    import os as _os
+    monkeypatch.setattr(cdn, "PATHS", Paths(root=tmp_path / "data"))
+    monkeypatch.setattr(cdn.Path, "home", classmethod(lambda cls: tmp_path))
+    d = tmp_path / "Downloads"
+    d.mkdir()
+    (d / "scheduleLeagueV2.json").write_text("{}", encoding="utf-8")
+    (d / "scheduleLeagueV2 (1).json").write_text("{}", encoding="utf-8")
+    _os.utime(d / "scheduleLeagueV2.json", (1_000_000_000, 1_000_000_000))
+    assert cdn.saved_schedule_file("2026-27").name == "scheduleLeagueV2 (1).json"
+    assert cdn.saved_schedule_file("2026-27", d / "scheduleLeagueV2.json").name == "scheduleLeagueV2.json"
+
+
+def test_a_refusal_of_game_files_falls_back_to_the_mirror_for_the_rest(monkeypatch, tmp_path):
+    seen = _fallback_world(monkeypatch, tmp_path)
+    old = "2026-10-21T23:30:00Z"
+    sched = {"leagueSchedule": {"gameDates": [{"gameDate": "x", "games": [_game(22600501, 3, old, hs=2, as_=0),
+                                                                            _game(22600502, 3, old, hs=2, as_=0)]}]}}
+    inner = cdn.urllib.request.urlopen
+
+    def fake(req, timeout=None):                                   # the schedule answers, the game files are refused
+        if req.full_url == cdn.SCHEDULE_URL:
+            return _Raw(json.dumps(sched).encode("utf-8"))
+        return inner(req, timeout)
+    monkeypatch.setattr(cdn.urllib.request, "urlopen", fake)
+    s = cdn.fetch_live("2026-27", pause_s=0, log=lambda m: None)
+    assert s["source"] == "cdn+mirror" and s["downloaded"] == 2
+    assert sum("playbyplay" in u for u in seen["calls"]) == 1      # the first refusal stops the CDN requests

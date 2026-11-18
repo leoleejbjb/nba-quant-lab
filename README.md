@@ -109,7 +109,7 @@ make backtest    # simulation backtests: 2023-24 -> blend weight -> blend; 2024-
 make report      # baselines, GBM, matchup ablation, team-first model, summary, FINDINGS    (~15 min)
 make docs        # re-render README results, docs/REPORT.md and docs/report.html from the summary
 make dashboard   # http://localhost:8501
-make test        # 72 tests (the slow end-to-end rehearsal test runs with QUANTLAB_SLOW_TESTS=1)
+make test        # 78 tests (the slow end-to-end rehearsal test runs with QUANTLAB_SLOW_TESTS=1)
 ```
 
 **Current season.** After the pipeline has run once (`make data models` is enough to start; `make backtest` chooses
@@ -130,8 +130,17 @@ deep-bench players with their share of the team's recent games, so mark the offi
 injury report on the Slate page (or in `data/live_overrides.json`, METHODOLOGY section 11) before projecting: players
 out, and players back - from a short or a long absence. Each change re-projects the teammates' minutes and acts on
 the team's projection the way a Scenario-lab change does. Requests to cdn.nba.com
-identify the program honestly and are never retried under another identity; if the CDN refuses a machine (cloud
-machines are often refused - this build environment was), the update stops with a message.
+identify the program honestly and are never retried under another identity.
+
+**When cdn.nba.com refuses your machine** (HTTP 403 - it refuses many machines, desktops included), `make live` falls
+back to two other sources: the finished games come from the open mirror the pinned seasons come from
+([shufinskiy/nba_data](https://github.com/shufinskiy/nba_data), updated every few weeks during a season), and the
+schedule from a copy you save in your browser - open
+[scheduleLeagueV2.json](https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json), press Ctrl+S (it lands in
+your Downloads folder, where `live-update` looks; or pass `--schedule <file>`) and run `make live` again; save it again
+whenever you want the newest game statuses. The newest finished games may not be in the mirror yet: the projections
+then use the games through its last update, `live-update` and the dashboard say how far behind they are, and the
+injury report covers what changed since. Until the mirror publishes the season nothing can be projected.
 
 **Windows (PowerShell).** `make.ps1` runs the same targets. Install [Git](https://git-scm.com/download/win), the
 [Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) (numba and LightGBM need
@@ -184,7 +193,7 @@ taken from who appeared in the game, the inactive-list stand-in described in Res
 | `quantlab baselines` / `ablation` / `topdown` | Baselines + gradient boosting; the nested matchup ablation; the team-first reconciliation architecture. |
 | `quantlab report` | `data/backtest/summary.json` and `docs/FINDINGS_DATA.md`. |
 | `quantlab project` | Projected box scores, score distribution and a prop for one game (an upcoming game is projected pregame); `--out` for scenarios. |
-| `quantlab live-update` | Current season: fetch new games from cdn.nba.com (`--skip-fetch` rebuilds from the files already fetched), rebuild the season, refresh features and models with the fitted parameters, give the next 10 days' games pregame inputs. |
+| `quantlab live-update` | Current season: fetch new games from cdn.nba.com, or from the open mirror and a browser-saved schedule when it refuses (`--source auto\|cdn\|mirror`, `--schedule <file>`; `--skip-fetch` rebuilds from the files already fetched), rebuild the season, refresh features and models with the fitted parameters, give the next 10 days' games pregame inputs. |
 | `quantlab slate` | Every player's projected line (mean and 10th-90th percentile) for all games on a date, as a CSV (`--date today`). |
 | `quantlab dashboard` | Streamlit dashboard. |
 | `quantlab sql "SELECT ..."` | DuckDB over every processed table. |
@@ -225,7 +234,7 @@ src/quantlab/
   cli.py, config.py   command line; paths, seasons and the tuning/test split
 scripts/       run_backtests.py, rehearse_live.py (the current-season rehearsal), make_report_page.py
                (docs/report.html), docs/ (README results and REPORT renderers), package.sh
-tests/         72 tests: PBP rules, leakage, simulator invariants, props, scenarios, the live feed, the rehearsal,
+tests/         78 tests: PBP rules, leakage, simulator invariants, props, scenarios, the live feed, the rehearsal,
                review regressions
 Makefile, make.ps1   pipeline targets (make on Linux/macOS, PowerShell on Windows)
 docs/          REPORT.md, METHODOLOGY.md, DATA.md, FINDINGS_DATA.md (auto-generated), screenshots

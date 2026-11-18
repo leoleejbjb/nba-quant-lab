@@ -258,7 +258,7 @@ def cmd_live_update(a) -> None:
     import pandas as pd
     from .config import LIVE_SEASON, UPCOMING_DAYS
     from .data.build import build_season
-    from .data.cdn import FetchError, fetch_live
+    from .data.cdn import FetchError, ScheduleNeeded, fetch_live
     from .data.database import build_database, upcoming_team_games
     from .data.download import AccessDenied
     from .features.asof import build_features
@@ -277,14 +277,18 @@ def cmd_live_update(a) -> None:
     fetched = None
     if not a.skip_fetch:
         try:
-            fetched = fetch_live(LIVE_SEASON, refetch_hours=a.refetch_hours)
+            fetched = fetch_live(LIVE_SEASON, refetch_hours=a.refetch_hours, source=a.source,
+                                 schedule_file=a.schedule)
         except AccessDenied as e:
             raise SystemExit(f"[live] {e}\nThe request was refused (by cdn.nba.com, or by a proxy on the way). Requests "
-                             "are never retried under another identity: run `quantlab live-update` on your own "
-                             "computer (cloud machines are often refused) without a proxy that blocks it, or rebuild "
-                             "from the files already fetched with --skip-fetch.") from None
+                             "are never retried under another identity: use --source auto (the default) to fall back "
+                             "to the open mirror, or rebuild from the files already fetched with --skip-fetch.") from None
+        except ScheduleNeeded as e:
+            raise SystemExit(f"[live] {e}") from None
+        except FileNotFoundError as e:
+            raise SystemExit(f"[live] {e}") from None
         except FetchError as e:
-            raise SystemExit(f"[live] could not download the schedule: {e}\nCheck the internet connection and run "
+            raise SystemExit(f"[live] could not download: {e}\nCheck the internet connection and run "
                              "`quantlab live-update` again, or rebuild from the files already fetched with "
                              "--skip-fetch.") from None
     q = build_season(LIVE_SEASON, workers=a.workers)
@@ -308,14 +312,29 @@ def cmd_live_update(a) -> None:
               "upcoming_days": UPCOMING_DAYS,
               "upcoming_dates": sorted({str(pd.Timestamp(d).date()) for d in up["game_date"]}),
               "fetch": fetched}
+    ts = pd.read_parquet(PATHS.processed("all") / "team_schedule.parquet") \
+        if (PATHS.processed("all") / "team_schedule.parquet").exists() else None
+    if ts is not None:                 # finished games that are not built yet (the mirror lags behind the schedule)
+        ts = ts[ts["season"] == LIVE_SEASON]
+        status["final_not_built"] = int(ts.loc[(ts["status"] == "final") & ~ts["built"], "game_id"].nunique())
+        fin = ts.loc[ts["status"] == "final", "game_date"]
+        status["last_final_in_schedule"] = str(pd.Timestamp(fin.max()).date()) if len(fin) else None
     (PATHS.root / "live_status.json").write_text(json.dumps(status, indent=1, default=str), encoding="utf-8")
-    if not status["games_built"]:
+    if fetched and fetched.get("mirror") == "not published yet" and not status["games_built"]:
+        print(f"[live] {LIVE_SEASON}: no finished games in the data yet - the open mirror has not published the "
+              "season (last season it came on Nov 13, then every few weeks); run live-update again in a few days")
+    elif not status["games_built"]:
         print(f"[live] {LIVE_SEASON}: no finished games yet - a team's games are projected from its first game on")
+    if status.get("final_not_built"):
+        print(f"[live] {status['final_not_built']} finished games (through {status['last_final_in_schedule']}) are not in "
+              f"the data yet: the projections use the games through {status['last_game_date'] or '-'} - enter the "
+              "injury report for anything that changed since")
     print(f"[live] {LIVE_SEASON}: {status['games_built']} games built through {status['last_game_date'] or '-'}; "
-          f"{status['upcoming_games']} upcoming games in the next {UPCOMING_DAYS} days "
+          f"{status['upcoming_games']} games to project "
           f"({status['upcoming_dates'][0] if status['upcoming_dates'] else '-'} .. "
-          f"{status['upcoming_dates'][-1] if status['upcoming_dates'] else '-'}), "
-          f"{n_proj} of them projectable (both teams have played this season)")
+          f"{status['upcoming_dates'][-1] if status['upcoming_dates'] else '-'}: not played yet, or finished but not "
+          f"in the data, up to {UPCOMING_DAYS} days after the latest finished game), {n_proj} of them projectable "
+          "(both teams have a finished game in the data)")
 
 
 def cmd_dashboard(a) -> None:
@@ -393,12 +412,19 @@ def main(argv: list[str] | None = None) -> int:
     sl.add_argument("--environment", default="blend", choices=["blend", "team", "none"])
     sl.add_argument("--out", default="", help="CSV path (default projections_<date>.csv)")
     sl.set_defaults(fn=cmd_slate)
-    lu = sub.add_parser("live-update", help="current season: fetch new games from cdn.nba.com, rebuild the season, "
-                                            "refresh features and models (run it on your own computer)")
+    lu = sub.add_parser("live-update", help="current season: fetch new games from cdn.nba.com (or, when it refuses, "
+                                            "the open mirror and a schedule saved in your browser), rebuild the "
+                                            "season, refresh features and models")
     lu.add_argument("--skip-fetch", action="store_true", help="rebuild from the files already fetched")
     lu.add_argument("--refetch-hours", type=float, default=36.0,
                     help="download games again until this many hours after tip-off (post-game stat corrections)")
     lu.add_argument("--workers", type=int, default=4)
+    lu.add_argument("--source", choices=["auto", "cdn", "mirror"], default="auto",
+                    help="auto (default): cdn.nba.com, or the open mirror and a browser-saved schedule if it refuses; "
+                         "cdn: cdn.nba.com only; mirror: the open mirror and a browser-saved schedule")
+    lu.add_argument("--schedule", default=None,
+                    help="the schedule saved from your browser (scheduleLeagueV2.json); default: the newest copy in "
+                         "the live data folder or your Downloads folder")
     lu.set_defaults(fn=cmd_live_update)
     d = sub.add_parser("dashboard", help="launch the Streamlit dashboard")
     d.add_argument("--port", type=int, default=8501)

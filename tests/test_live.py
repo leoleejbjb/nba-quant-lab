@@ -132,6 +132,25 @@ def test_upcoming_games_follow_the_last_built_game(monkeypatch, tmp_path):
     assert sorted(up["game_id"].unique()) == [2]                          # game 3 is beyond the horizon
 
 
+def test_upcoming_games_follow_the_latest_final_when_the_data_lags(monkeypatch, tmp_path):
+    """With the open mirror the built games lag the schedule: the horizon starts at the latest game final in the
+    schedule, so the coming games stay projectable."""
+    from quantlab.data import database
+    paths = Paths(root=tmp_path)
+    (tmp_path / "processed" / "all").mkdir(parents=True)
+    ts = pd.DataFrame({"game_id": [1, 1, 2, 2, 3, 3], "team_id": [10, 20, 10, 20, 10, 20],
+                       "opp_team_id": [20, 10, 20, 10, 20, 10], "is_home": [True, False] * 3,
+                       "season": ["2026-27"] * 6,
+                       "game_date": pd.to_datetime(["2026-11-01"] * 2 + ["2026-11-20"] * 2 + ["2026-11-25"] * 2),
+                       "tip_utc": pd.NaT, "rest_days": 2.0, "b2b": False,
+                       "status": ["final"] * 4 + ["scheduled"] * 2, "built": [True] * 2 + [False] * 4})
+    ts.to_parquet(tmp_path / "processed" / "all" / "team_schedule.parquet")
+    monkeypatch.setattr(database, "PATHS", paths)
+    monkeypatch.setattr(database, "LIVE_SEASON", "2026-27")
+    up = database.upcoming_team_games(horizon_days=10)
+    assert sorted(up["game_id"].unique()) == [2, 3]          # 11-20 final, not built yet; 11-25 within 10 days of it
+
+
 def test_fetch_of_the_live_season_points_to_live_update():
     from quantlab.cli import main
     with pytest.raises(SystemExit) as e:
@@ -205,9 +224,9 @@ def test_pregame_problem_names_a_team_without_a_game_yet():
     st.tp = pd.DataFrame(index=pd.Index([7, 8, 10], name="game_id"))
     st.by_game = {7: pd.DataFrame({"team_id": [1, 2]}), 8: pd.DataFrame({"team_id": [1, 1]})}
     assert st.pregame_problem(7) is None
-    assert "AWY has not played" in st.pregame_problem(8)
+    assert "AWY has no finished game" in st.pregame_problem(8)
     assert "not known" in st.pregame_problem(9)
-    assert "HOM and AWY have not played" in st.pregame_problem(10)       # opening night: no rosters at all
+    assert "HOM and AWY have no finished game" in st.pregame_problem(10)  # opening night: no rosters at all
     assert "beyond the projection horizon" in st.pregame_problem(11)      # no team-model line either
     st.schedule["status"] = ["scheduled"] * 4 + ["postponed"]
     assert "postponed" in st.pregame_problem(11)

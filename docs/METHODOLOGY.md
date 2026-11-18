@@ -289,7 +289,10 @@ feature store, the team model, the minutes models (for the current season traine
 variants, saved for re-projection), and the EB rates and team style factors with the half-lives and prior strengths
 read from `rate_params.json` and `team_factor_params.json`; the simulator constants and the blend weight are reused.
 Nothing is re-tuned and nothing about the current season is scored. On the rehearsal (602 finished games) an update
-without the download took about 90 s.
+without the download took about 90 s. When cdn.nba.com refuses, the finished games come from the open mirror, which
+lags the schedule by up to a few weeks (DATA.md): the projections then know the games through its last update only -
+the games since are treated like unplayed games, each team's computed as of its first one, and the horizon below
+starts at the latest game final in the schedule, so the coming games stay projectable.
 
 **Unplayed games.** The unplayed games up to 10 days after the last finished game (`QUANTLAB_UPCOMING_DAYS`) get rows
 in every walk-forward table with nothing from the game: the team model's ratings through the last finished game and

@@ -67,8 +67,13 @@ with st.sidebar:
                    "methods). The actual results are shown for comparison.")
     ls = state.live_status()
     if ls and LIVE:
-        st.caption(f"Current season data updated {str(ls.get('updated_at', ''))[:16].replace('T', ' ')} UTC, "
-                   f"games through {ls.get('last_game_date')}.")
+        src = (ls.get("fetch") or {}).get("source")
+        line = (f"Current season data updated {str(ls.get('updated_at', ''))[:16].replace('T', ' ')} UTC, finished "
+                f"games through {ls.get('last_game_date') or '-'}{' (open mirror)' if src == 'mirror' else ''}.")
+        if ls.get("final_not_built"):
+            line += (f" {ls['final_not_built']} finished games since (through {ls.get('last_final_in_schedule')}) are "
+                     "not in the data yet: the projections do not know them - enter the injury report for changes.")
+        st.caption(line)
     if st.button("Reload data", help="After `quantlab live-update`: load the new games and models"):
         state.reload_data()
         st.rerun()

@@ -69,15 +69,16 @@ def build_schedule_tables(seasons, out_dir) -> tuple[int, pd.DataFrame | None]:
 
 def upcoming_team_games(horizon_days: int = UPCOMING_DAYS) -> pd.DataFrame:
     """Team-games of the live season that are not built yet (scheduled, in progress, or final without a usable
-    play-by-play file) and are dated no later than ``horizon_days`` after its last built game: the games that get
-    pregame projections."""
+    play-by-play file) and are dated no later than ``horizon_days`` after its latest finished game - built, or final
+    in the schedule but not built yet (the open mirror lags by up to a few weeks): the games that get pregame
+    projections."""
     p = PATHS.processed("all") / "team_schedule.parquet"
     if not p.exists():
         return pd.DataFrame(columns=SCHEDULE_TEAM_COLS)
     ts = pd.read_parquet(p)
     ts = ts[ts["season"] == LIVE_SEASON]
-    built = ts[ts["built"]]
-    start = built["game_date"].max() if len(built) else ts["game_date"].min() - pd.Timedelta(days=1)
+    done = ts[ts["built"] | (ts["status"] == "final")]
+    start = done["game_date"].max() if len(done) else ts["game_date"].min() - pd.Timedelta(days=1)
     up = ts[~ts["built"] & (ts["game_date"] <= start + pd.Timedelta(days=horizon_days))]
     return up.reset_index(drop=True)
 

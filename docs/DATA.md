@@ -109,7 +109,19 @@ same code:
   was exercised by a rehearsal instead: `scripts/rehearse_live.py` writes a finished season (2025-26) in the live
   format from the pinned mirror (games before a cutoff final, the rest scheduled; a test checks that the live reader
   reproduces the mirror's events exactly) and runs the real `quantlab live-update --skip-fetch` on it (results in
-  METHODOLOGY, section 11). On a desktop computer the CDN normally answers; cloud machines are often refused.
+  METHODOLOGY, section 11). The CDN refuses some desktops too.
+* **When the CDN refuses** (`--source auto`, the default; `--source mirror` forces it): the schedule comes from a copy
+  of `scheduleLeagueV2.json` the user saved in a browser - opening a public page in a browser is ordinary access, and
+  the program itself still never poses as one - looked for in `data/raw/live/2026-27/`, then the Downloads folder (the
+  newest copy), or given with `--schedule`; the finished games come from the open mirror
+  ([shufinskiy/nba_data](https://github.com/shufinskiy/nba_data), Apache-2.0, listed in its `list_data.txt` as
+  `cdnnba_2026`), downloaded again only when it changed (its ETag) and stored as
+  `data/raw/live/2026-27/mirror/cdnnba_2026.tar.xz` with its SHA-256 in the manifest, then written as one game document
+  per finished game, checked like a CDN file (a game the CDN delivered is kept). Every complete game document is built,
+  also one the saved schedule does not show as final yet. The mirror updates every few weeks during a season (in
+  2025-26 it published the season on Nov 13 and then every 2-5 weeks), so the newest finished games can be missing:
+  they are then treated like unplayed games (METHODOLOGY, section 11) and `live-update` and the dashboard say how
+  many there are.
 * **When the season changes**: set `QUANTLAB_LIVE_SEASON` to the new season (or change `LIVE_SEASON` in `config.py`).
   The finished season stays in the database, built from the files already fetched (`quantlab build --season 2026-27`
   rebuilds it). Once the mirror publishes it, pin it like the others: add the file's checksum to `PBP_SHA256` in

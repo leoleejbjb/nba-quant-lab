@@ -25,7 +25,7 @@ docs:               ## re-render the README results block, docs/REPORT.md, docs/
 	$(PY) scripts/docs/render_report.py --check && $(PY) scripts/docs/render_docs.py --check
 	$(PY) scripts/docs/render_report.py && $(PY) scripts/docs/render_docs.py && $(PY) scripts/make_report_page.py
 
-live:               ## current season: fetch new games from cdn.nba.com, rebuild it, refresh features and models (frozen parameters; run where the CDN answers)
+live:               ## current season: new games from cdn.nba.com, or the open mirror + a browser-saved schedule when it refuses; rebuild, refresh features and models (frozen parameters)
 	$(QL) live-update
 
 test:

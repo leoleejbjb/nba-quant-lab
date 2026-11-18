@@ -118,8 +118,9 @@ class InputStore:
         have = set(f["team_id"].astype(int)) if f is not None else set()
         missing = [str(g["home_team"] if t == home else g["away_team"]) for t in (home, away) if t not in have]
         if missing:
-            return (f"{' and '.join(missing)} {'has' if len(missing) == 1 else 'have'} not played this season yet "
-                    "(no recent roster to project from: projections start after a team's first game)")
+            return (f"{' and '.join(missing)} {'has' if len(missing) == 1 else 'have'} no finished game in the data "
+                    "this season yet (no recent roster to project from: projections start from a team's first "
+                    "finished game in the data)")
         return None
 
     def league_tov(self, date) -> float:
